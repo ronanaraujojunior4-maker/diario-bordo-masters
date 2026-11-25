@@ -48,7 +48,7 @@ Bibliotecas por CDN: Chart.js 4.4.1, SheetJS 0.18.5, JSZip 3.10.1 e supabase-js 
 - Um veículo só pode estar com uma pessoa por vez; cada pessoa só com um veículo.
 - Funcionário só registra viagem/abastecimento com o veículo assumido; só libera o próprio veículo.
 - Liberação administrativa exige confirmação e justificativa, e fica na auditoria.
-- Última km = maior km de chegada entre as viagens de todos os usuários do veículo; nunca retrocede. Viagem nova não pode começar abaixo dela. Lacunas e retrocessos aparecem em "Pontos de atenção" (Visão geral), na coluna "Conflitos de km" do ciclo e no Registro, sem alterar os registros originais.
+- Última km = maior km de chegada entre as viagens de todos os usuários do veículo; nunca retrocede. Viagem nova não pode começar abaixo dela. Lacunas e retrocessos aparecem na coluna "Conflitos de km" do ciclo e no Registro, sem alterar os registros originais.
 - Idempotência: cada formulário tem um ID único (clique repetido, recarga ou reenvio não duplicam). Abastecimento com mesmo veículo, data, hora e valor é recusado.
 - Importação (menu Administração → Importação, só MASTERS) no **mesmo layout do sistema anterior**: CSV do "Exportar CSV" (`;`, seções de viagens e abastecimentos) e planilha "Controle de Utilização Veículo" (viagens a partir da linha 4; abastecimentos na coluna ABASTECIMENTO como `dd/mm/aaaa — hh:mm — N litros — R$ V.`; vários arquivos "parteN" de uma vez).
   - Escolha: viagens e abastecimentos, só viagens ou só abastecimentos.

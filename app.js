@@ -226,7 +226,7 @@ const DB = {
 
 /* ───────────── Estado e sessão ───────────── */
 const S = { user: null, route: 'painel', charts: [], regFilter: '', relTab: 'viagens', rel: { ini: isoDay(addDays(new Date(), -29)), fim: today(), vid: '', uid: '' }, importPreview: null, cadTab: 'veiculos' };
-const APP_VERSAO = '20261125-1600';
+const APP_VERSAO = '20261125-1610';
 const isAdmin = () => S.user?.papel === 'admin';
 const podeOperar = () => !!S.user && (S.user.papel !== 'admin' || !!S.user.opera_veiculos); // funcionário ou administrador que também opera (RONAN)
 const operador = u => u && u.ativo !== false && !u.excluido_em && (u.papel !== 'admin' || u.opera_veiculos); // pode ser responsável/autorizado
@@ -366,7 +366,7 @@ function renderShell() {
       <div class="grp">Operação</div>${main.map(navItem).join('')}
       ${isAdmin() ? `<div class="grp">Administração</div>${adm.map(navItem).join('')}` : ''}
       <div class="foot">
-        <div class="ver muted">Versão 20261125-1600</div>
+        <div class="ver muted">Versão 20261125-1610</div>
         <div class="me"><span class="avatar">${esc(S.user.nome.split(' ').map(p => p[0]).slice(0, 2).join(''))}</span><span class="who"><b>${esc(S.user.nome)}</b><span>${isAdmin() ? (podeOperar() ? 'Administrador e operacional' : 'Administrador') : 'Funcionário'} · ${esc(S.user.usuario)}</span></span></div>
         ${window.CLOUD ? `<button class="lnk" id="mypass" title="Alterar minha senha">${ico('key')}<span class="lbl">Alterar minha senha</span></button>` : ''}
         <button class="lnk" id="collapse" title="Recolher menu">${ico('panel')}<span class="lbl">Recolher menu</span></button>
@@ -511,11 +511,10 @@ function rPainel() {
   const V = DB.vehicles(), ini = isoDay(addDays(new Date(), -29)), fim = today(), P = periodStats(ini, fim);
   const FO = frotaOperacao(), emUso = FO.uso, R = resumoOperacao(), C = V.map(cicloVeiculo), CR = C.filter(c => c.ref), cKm = CR.reduce((s, c) => s + c.km, 0), cViag = CR.reduce((s, c) => s + c.T.length, 0), mes = new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
   const recent = [...P.T.map(t => ({ k: 'v', at: t.data + (t.hora_saida || ''), t })), ...P.A.map(a => ({ k: 'a', at: a.data + a.hora, a }))].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 7);
-  const mine = DB.myUse(), AT = attention();
+  const mine = DB.myUse();
   afterRender.painel = () => {
     bindVehActions();
     $('#k-ciclo')?.addEventListener('click', () => $('#ciclos')?.scrollIntoView({ behavior: 'smooth' }));
-    $('#ver-at')?.addEventListener('click', () => dialog(`<div class="dh"><h2>Pontos de atenção</h2></div><div class="dialog-body"><div class="list">${AT.map(x => `<div class="li">${ico(x.lvl === 'crit' ? 'alert' : 'clock')}<div class="t"><b>${esc(x.t)}</b><div class="muted" style="font-size:12px">${esc(x.d)}</div></div></div>`).join('')}</div></div><div class="dialog-foot"><button class="btn" id="c">Fechar</button></div>`, d => { $('#c', d).onclick = closeDlg; }));
     const days = [...Array(30)].map((_, i) => isoDay(addDays(new Date(), i - 29)));
     mkChart('c-km', { type: 'bar', data: { labels: days.map(d => fd(d).slice(0, 5)), datasets: V.map((v, i) => ({ label: v.nome, backgroundColor: VCOL[i % VCOL.length], borderRadius: 3, data: days.map(d => P.T.filter(t => t.data === d && t.vehicle_id === v.id).reduce((s, t) => s + t.km_chegada - t.km_saida, 0)) })) }, options: { maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, usePointStyle: true } }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${nf(c.raw)} km` } } }, scales: { x: { stacked: true, grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 12 } }, y: { stacked: true, ticks: { callback: v => nf(v) } } } } });
     mkChart('c-fuel', { type: 'doughnut', data: { labels: V.map(v => v.nome), datasets: [{ data: V.map(v => P.A.filter(a => a.vehicle_id === v.id).reduce((s, a) => s + a.total, 0)), backgroundColor: V.map((_, i) => VCOL[i % VCOL.length]), borderColor: css('--surface'), borderWidth: 3 }] }, options: { maintainAspectRatio: false, cutout: '68%', plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, usePointStyle: true } }, tooltip: { callbacks: { label: c => `${c.label}: ${brl(c.raw)}` } } } } });
@@ -533,7 +532,6 @@ function rPainel() {
     <div class="kpi" style="--tone:var(--graphite)"><span class="k">Consumo médio</span><span class="v" style="font-size:17px">${CR.length ? 'Dados insuficientes' : 'Sem referência de abastecimento'}</span><span class="s">${CR.length ? 'abastecimento sem registro de tanque cheio' : 'nenhum abastecimento registrado'}</span></div>
     <div class="kpi" style="--tone:var(--electric)"><span class="k">${ico('car')}Frota em operação</span><span class="fo"><span><b>${FO.uso}</b>em uso</span><span><b>${FO.disp}</b>disponíveis</span><span><b>${FO.reservados}</b>reservados</span></span><span class="s">${FO.total} veículos ativos</span></div>
   </section>
-  ${AT.length ? `<div class="msg warn">${ico('alert')}<span><b>${AT.length} ${AT.length > 1 ? 'pontos' : 'ponto'} de atenção</b> (conflitos de km, manutenção e outros). <a href="javascript:void 0" id="ver-at">Ver detalhes</a></span></div>` : ''}
   <section class="card"><header><h2>Frota agora</h2><span class="grow"></span><span class="muted" style="font-size:12px">Última km calculada a partir das viagens de todos os usuários</span></header>
     <div class="fleet">${V.map(v => vehCard(v)).join('') || '<div class="empty">Nenhum veículo autorizado.</div>'}</div></section>
   <section class="card" id="ciclos"><header><h2>Ciclo atual por veículo</h2><span class="grow"></span><span class="muted" style="font-size:12px">desde o último abastecimento de cada veículo</span></header>
@@ -609,7 +607,7 @@ function rRegistro() {
       if (err) { $('#t-err').innerHTML = `<div class="msg err">${ico('alert')}${esc(err)}</div>`; return; }
       const gap = t.km_saida - lk;
       const go = async () => { btn.disabled = true; try { const r = await DB.addTrip(t); toast(r === 'repetido' ? 'Esta viagem já estava salva. Nada foi duplicado.' : 'Viagem salva. Última km atualizada.'); route(); } catch (x) { btn.disabled = false; $('#t-err').innerHTML = `<div class="msg err">${ico('alert')}${esc(x.message)}</div>`; } };
-      if (gap > 0) dialog(`<div class="dh"><h2>KM de saída acima da última registrada</h2></div><div class="dialog-body"><p>Há <b>${nf(gap)} km</b> sem registro entre a última viagem (${nf(lk)} km) e esta saída (${nf(t.km_saida)} km). A viagem será salva e a diferença aparecerá no indicador "Atenção" da Visão geral.</p></div><div class="dialog-foot"><button class="btn sec" id="c">Corrigir</button><button class="btn" id="o">Salvar assim mesmo</button></div>`, d => { $('#c', d).onclick = closeDlg; $('#o', d).onclick = () => { closeDlg(); go(); }; });
+      if (gap > 0) dialog(`<div class="dh"><h2>KM de saída acima da última registrada</h2></div><div class="dialog-body"><p>Há <b>${nf(gap)} km</b> sem registro entre a última viagem (${nf(lk)} km) e esta saída (${nf(t.km_saida)} km). A viagem será salva e a diferença ficará marcada como "KM divergente" no Registro.</p></div><div class="dialog-foot"><button class="btn sec" id="c">Corrigir</button><button class="btn" id="o">Salvar assim mesmo</button></div>`, d => { $('#c', d).onclick = closeDlg; $('#o', d).onclick = () => { closeDlg(); go(); }; });
       else go();
     };
   };
