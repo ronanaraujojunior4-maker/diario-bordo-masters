@@ -226,7 +226,7 @@ const DB = {
 
 /* ───────────── Estado e sessão ───────────── */
 const S = { user: null, route: 'painel', charts: [], regFilter: '', relTab: 'viagens', rel: { ini: isoDay(addDays(new Date(), -29)), fim: today(), vid: '', uid: '' }, importPreview: null, cadTab: 'veiculos' };
-const APP_VERSAO = '20261125-1610';
+const APP_VERSAO = '20261125-1620';
 const isAdmin = () => S.user?.papel === 'admin';
 const podeOperar = () => !!S.user && (S.user.papel !== 'admin' || !!S.user.opera_veiculos); // funcionário ou administrador que também opera (RONAN)
 const operador = u => u && u.ativo !== false && !u.excluido_em && (u.papel !== 'admin' || u.opera_veiculos); // pode ser responsável/autorizado
@@ -366,7 +366,7 @@ function renderShell() {
       <div class="grp">Operação</div>${main.map(navItem).join('')}
       ${isAdmin() ? `<div class="grp">Administração</div>${adm.map(navItem).join('')}` : ''}
       <div class="foot">
-        <div class="ver muted">Versão 20261125-1610</div>
+        <div class="ver muted">Versão 20261125-1620</div>
         <div class="me"><span class="avatar">${esc(S.user.nome.split(' ').map(p => p[0]).slice(0, 2).join(''))}</span><span class="who"><b>${esc(S.user.nome)}</b><span>${isAdmin() ? (podeOperar() ? 'Administrador e operacional' : 'Administrador') : 'Funcionário'} · ${esc(S.user.usuario)}</span></span></div>
         ${window.CLOUD ? `<button class="lnk" id="mypass" title="Alterar minha senha">${ico('key')}<span class="lbl">Alterar minha senha</span></button>` : ''}
         <button class="lnk" id="collapse" title="Recolher menu">${ico('panel')}<span class="lbl">Recolher menu</span></button>
@@ -751,6 +751,7 @@ function vehicleDialog(v) {
 }
 
 /* ───────────── 4. Abastecimento ───────────── */
+const POSTO_PADRAO = 'Posto Atem - Posto Distrito II'; // padrão definido pelo usuário (editável no formulário)
 const MOD = { avulso: 'Avulso / vinculado a viagem', req: 'Requisição Masters', func: 'Pago pelo funcionário' };
 function rAbastecimento() {
   const mine = DB.myUse(), V = DB.vehicles();
@@ -758,14 +759,14 @@ function rAbastecimento() {
   if (!podeOperar()) top = `<div class="msg info">${ico('shield')}<span>Esta conta é exclusivamente administrativa: consulta e corrige abastecimentos, mas não registra em nome dos funcionários.</span></div>`;
   else if (!mine) top = `<div class="msg info acoes-op">${ico('car')}<span>Para registrar um abastecimento, primeiro assuma o veículo sob sua responsabilidade.</span><span class="acoes-bt"><a class="btn" href="#registro">${ico('car')}Assumir veículo</a></span></div>`;
   else {
-    const vid = mine.vehicle_id, lk = DB.lastKm(vid), postos = [...new Set(DB.d.fuelings.map(a => a.posto).filter(Boolean))];
+    const vid = mine.vehicle_id, lk = DB.lastKm(vid), postos = [...new Set([POSTO_PADRAO, ...DB.d.fuelings.map(a => a.posto).filter(Boolean)])];
     const trips = DB.ordered(vid).reverse().slice(0, 8);
     top = `<section class="card"><header><h2>Novo abastecimento</h2><span class="grow"></span>${vehLabel(DB.veh(vid))}</header>
     <form class="f" id="af" data-fid="${uid()}" novalidate>
       <label class="fld">Data<input id="a-data" type="date" value="${today()}"></label>
       <label class="fld">Horário<input id="a-hora" type="time"></label>
       <label class="fld">KM do veículo<input id="a-km" type="number" min="0" inputmode="numeric" value="${lk.km ?? ''}"><span class="hint muted">Sugerida pela última km válida</span></label>
-      <label class="fld">Posto<input id="a-posto" list="postos" placeholder="Selecione ou digite"><datalist id="postos">${postos.map(p => `<option value="${esc(p)}">`).join('')}</datalist></label>
+      <label class="fld">Posto<input id="a-posto" list="postos" placeholder="Selecione ou digite" value="${esc(POSTO_PADRAO)}"><datalist id="postos">${postos.map(p => `<option value="${esc(p)}">`).join('')}</datalist></label>
       <label class="fld">Combustível<select id="a-comb">${['Gasolina', 'Etanol', 'Diesel', 'GNV', 'Outro'].map(c => `<option ${c === (DB.veh(vid).modelo || '').match(/Diesel/i)?.[0] ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
       <label class="fld">Modalidade<select id="a-mod">${Object.entries(MOD).map(([k, l]) => `<option value="${k}" ${k === 'req' ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label class="fld">Valor total pago (R$)<input id="a-tot" inputmode="decimal" placeholder="300,00"></label>
