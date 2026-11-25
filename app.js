@@ -226,7 +226,7 @@ const DB = {
 
 /* ───────────── Estado e sessão ───────────── */
 const S = { user: null, route: 'painel', charts: [], regFilter: '', relTab: 'viagens', rel: { ini: isoDay(addDays(new Date(), -29)), fim: today(), vid: '', uid: '' }, importPreview: null, cadTab: 'veiculos' };
-const APP_VERSAO = '20261125-1700';
+const APP_VERSAO = '20261125-1730';
 const isAdmin = () => S.user?.papel === 'admin';
 const podeOperar = () => !!S.user && (S.user.papel !== 'admin' || !!S.user.opera_veiculos); // funcionário ou administrador que também opera (RONAN)
 const operador = u => u && u.ativo !== false && !u.excluido_em && (u.papel !== 'admin' || u.opera_veiculos); // pode ser responsável/autorizado
@@ -366,7 +366,7 @@ function renderShell() {
       <div class="grp">Operação</div>${main.map(navItem).join('')}
       ${isAdmin() ? `<div class="grp">Administração</div>${adm.map(navItem).join('')}` : ''}
       <div class="foot">
-        <div class="ver muted">Versão 20261125-1700</div>
+        <div class="ver muted">Versão 20261125-1730</div>
         <div class="me"><span class="avatar">${esc(S.user.nome.split(' ').map(p => p[0]).slice(0, 2).join(''))}</span><span class="who"><b>${esc(S.user.nome)}</b><span>${isAdmin() ? (podeOperar() ? 'Administrador e operacional' : 'Administrador') : 'Funcionário'} · ${esc(S.user.usuario)}</span></span></div>
         ${window.CLOUD ? `<button class="lnk" id="mypass" title="Alterar minha senha">${ico('key')}<span class="lbl">Alterar minha senha</span></button>` : ''}
         <button class="lnk" id="collapse" title="Recolher menu">${ico('panel')}<span class="lbl">Recolher menu</span></button>
@@ -827,14 +827,26 @@ function rAbastecimento() {
 }
 
 /* ───────────── 5. Relatórios ───────────── */
+function relCiclos() { // um ciclo por veículo: do último abastecimento válido DELE até agora
+  return DB.vehicles().filter(v => !S.rel.vid || v.id === S.rel.vid).map(v => {
+    const c = cicloVeiculo(v); if (!c.ref) return { v, ref: null, T: [], A: [] };
+    const marco = c.ref.data + ' ' + hhmm5(c.ref.hora), u = S.rel.uid;
+    const T = c.T.filter(t => !u || t.user_id === u).sort((a, b) => (a.data + hhmm5(a.hora_saida)).localeCompare(b.data + hhmm5(b.hora_saida)));
+    const A = DB.fuelings().filter(a => a.vehicle_id === v.id && a.data + ' ' + hhmm5(a.hora) >= marco && (!u || a.user_id === u)).sort((a, b) => (a.data + hhmm5(a.hora)).localeCompare(b.data + hhmm5(b.hora)));
+    const km = T.reduce((s, t) => s + (t.km_chegada - t.km_saida), 0), ult = T[T.length - 1];
+    return { v, ref: c.ref, T, A, km, ult, conflitos: c.conflitos };
+  });
+}
+const relPeriodo = v => { if (!S.rel.ciclo) return { ini: S.rel.ini, fim: S.rel.fim }; const r = DB.fuelings().filter(a => a.vehicle_id === v.id).sort((a, b) => (b.data + hhmm5(b.hora)).localeCompare(a.data + hhmm5(a.hora)))[0]; return { ini: r ? r.data : '', fim: today() }; };
 function relData() {
+  if (S.rel.ciclo) { const C = relCiclos(); return { T: C.flatMap(c => c.T), A: C.flatMap(c => c.A), C }; }
   const { ini, fim, vid, uid: u } = S.rel;
   const T = DB.trips().filter(t => t.data >= ini && t.data <= fim && (!vid || t.vehicle_id === vid) && (!u || t.user_id === u)).sort((a, b) => (a.data + a.hora_saida).localeCompare(b.data + b.hora_saida));
   const A = DB.fuelings().filter(a => a.data >= ini && a.data <= fim && (!vid || a.vehicle_id === vid) && (!u || a.user_id === u)).sort((a, b) => (a.data + a.hora).localeCompare(b.data + b.hora));
   return { T, A };
 }
 function rRelatorios() {
-  const V = DB.vehicles(), U = DB.d.users.filter(x => x.papel !== 'admin' || x.opera_veiculos), { T, A } = relData();
+  const V = DB.vehicles(), U = DB.d.users.filter(x => x.papel !== 'admin' || x.opera_veiculos), { T, A, C } = relData();
   const frota = V.filter(v => !S.rel.vid || v.id === S.rel.vid).map(v => { const t = T.filter(x => x.vehicle_id === v.id), a = A.filter(x => x.vehicle_id === v.id), km = t.reduce((s, x) => s + x.km_chegada - x.km_saida, 0), l = a.reduce((s, x) => s + x.litros, 0); return { v, n: t.length, km, l, tot: a.reduce((s, x) => s + x.total, 0), dias: new Set(t.map(x => x.data)).size, kml: l ? km / l : null }; });
   const porU = U.map(u => { const t = T.filter(x => x.user_id === u.id), a = A.filter(x => x.user_id === u.id); return { u, n: t.length, km: t.reduce((s, x) => s + x.km_chegada - x.km_saida, 0), na: a.length, tot: a.reduce((s, x) => s + x.total, 0) }; }).filter(x => x.n || x.na);
   const tabs = { viagens: 'Viagens', abastecimentos: 'Abastecimentos', frota: 'Utilização da frota', usuarios: 'Por usuário' };
@@ -844,9 +856,10 @@ function rRelatorios() {
   if (S.relTab === 'frota') body = table([{ h: 'Veículo', f: r => vehLabel(r.v) }, { h: 'Viagens', n: 1, f: r => r.n }, { h: 'Dias em uso', n: 1, f: r => r.dias }, { h: 'Km rodados', n: 1, f: r => nf(r.km) }, { h: 'Litros', n: 1, f: r => nf(r.l, 1) }, { h: 'Gasto', n: 1, f: r => brl(r.tot) }, { h: 'Km/L (estim.)', n: 1, f: r => r.kml ? nf(r.kml, 1) : '—' }, { h: 'Última km', n: 1, f: r => nf(DB.lastKm(r.v.id).km) }], frota);
   if (S.relTab === 'usuarios') body = table([{ h: 'Funcionário', f: r => esc(r.u.nome) }, { h: 'Viagens', n: 1, f: r => r.n }, { h: 'Km rodados', n: 1, f: r => nf(r.km) }, { h: 'Abastecimentos', n: 1, f: r => r.na }, { h: 'Gasto', n: 1, f: r => brl(r.tot) }], porU);
   afterRender.relatorios = () => {
-    ['ini', 'fim', 'vid', 'uid'].forEach(k => { const el = $('#r-' + k); if (el) el.onchange = async () => { S.rel[k] = el.value; if (k === 'ini' && window.CLOUD) await CLOUD.ensureSince(el.value).catch(x => toast(x.message)); route(); }; });
+    ['ini', 'fim', 'vid', 'uid'].forEach(k => { const el = $('#r-' + k); if (el) el.onchange = async () => { S.rel[k] = el.value; if (k === 'ini' || k === 'fim') S.rel.ciclo = false; if (k === 'ini' && window.CLOUD) await CLOUD.ensureSince(el.value).catch(x => toast(x.message)); route(); }; });
     $$('[data-rt]').forEach(b => b.onclick = () => { S.relTab = b.dataset.rt; route(); });
-    $$('[data-at]').forEach(b => b.onclick = () => { const n = new Date(); let i, f = today(); if (b.dataset.at === '7') i = isoDay(addDays(n, -6)); if (b.dataset.at === '30') i = isoDay(addDays(n, -29)); if (b.dataset.at === 'mes') i = isoDay(new Date(n.getFullYear(), n.getMonth(), 1)); if (b.dataset.at === 'ant') { i = isoDay(new Date(n.getFullYear(), n.getMonth() - 1, 1)); f = isoDay(new Date(n.getFullYear(), n.getMonth(), 0)); } Object.assign(S.rel, { ini: i, fim: f }); route(); });
+    $$('[data-at]').forEach(b => b.onclick = () => { const n = new Date(); let i, f = today(); if (b.dataset.at === '7') i = isoDay(addDays(n, -6)); if (b.dataset.at === '30') i = isoDay(addDays(n, -29)); if (b.dataset.at === 'mes') i = isoDay(new Date(n.getFullYear(), n.getMonth(), 1)); if (b.dataset.at === 'ant') { i = isoDay(new Date(n.getFullYear(), n.getMonth() - 1, 1)); f = isoDay(new Date(n.getFullYear(), n.getMonth(), 0)); } Object.assign(S.rel, { ini: i, fim: f, ciclo: false }); route(); });
+    $('#r-ciclo')?.addEventListener('click', () => { S.rel.ciclo = true; const C = relCiclos().filter(c => c.ref); if (C.length) Object.assign(S.rel, { ini: C.map(c => c.ref.data).sort()[0], fim: today() }); route(); });
     $('#x-xlsx')?.addEventListener('click', exportXlsx); $('#x-csv')?.addEventListener('click', exportCsv); $('#x-pdf')?.addEventListener('click', () => window.print());
   };
   const km = T.reduce((s, t) => s + t.km_chegada - t.km_saida, 0), tot = A.reduce((s, a) => s + a.total, 0);
@@ -854,7 +867,12 @@ function rRelatorios() {
       <label class="fld">Data inicial<input id="r-ini" type="date" value="${S.rel.ini}"></label><label class="fld">Data final<input id="r-fim" type="date" value="${S.rel.fim}"></label>
       <label class="fld">Veículo<select id="r-vid"><option value="">Todos</option>${V.map(v => `<option value="${v.id}" ${S.rel.vid === v.id ? 'selected' : ''}>${esc(v.nome)} – ${esc(v.placa)}</option>`).join('')}</select></label>
       ${isAdmin() ? `<label class="fld">Usuário<select id="r-uid"><option value="">Todos</option>${U.map(u => `<option value="${u.id}" ${S.rel.uid === u.id ? 'selected' : ''}>${esc(u.nome)}</option>`).join('')}</select></label>` : ''}
-      <div class="w bar">${[['7', 'Últimos 7 dias'], ['30', 'Últimos 30 dias'], ['mes', 'Este mês'], ['ant', 'Mês anterior']].map(([k, l]) => `<button type="button" class="btn sm sec" data-at="${k}">${l}</button>`).join('')}</div></form></section>
+      <div class="w bar">${[['7', 'Últimos 7 dias'], ['30', 'Últimos 30 dias'], ['mes', 'Este mês'], ['ant', 'Mês anterior']].map(([k, l]) => `<button type="button" class="btn sm sec" data-at="${k}">${l}</button>`).join('')}<button type="button" class="btn sm ${S.rel.ciclo ? '' : 'sec'}" id="r-ciclo">Desde o último abastecimento</button></div></form></section>
+  ${C ? `<section class="card"><header><h2>Desde o último abastecimento</h2><span class="grow"></span><span class="muted" style="font-size:12px">cada veículo a partir do seu próprio último abastecimento · emitido em ${new Date().toLocaleString('pt-BR')}</span></header>
+    ${table([{ h: 'Veículo', f: c => vehLabel(c.v) }, { h: 'Responsável', f: c => esc(DB.user(c.v.responsavel)?.nome || '—') }, { h: 'Último abastecimento', f: c => c.ref ? `${fd(c.ref.data)} ${esc(hhmm(c.ref.hora))}${c.ref.km != null ? ` · <span class="mono">${nf(c.ref.km)} km</span>` : ' · km não informada'}<div class="muted" style="font-size:12px">${nf(c.ref.litros, 2)} L · ${brl(c.ref.total)}${c.ref.posto ? ' · ' + esc(c.ref.posto) : ''}</div>` : '<span class="pill p-warn">Sem abastecimento: dados insuficientes para gerar o ciclo</span>' },
+      { h: 'Viagens', n: 1, f: c => c.ref ? c.T.length : '—' }, { h: 'Km percorridos', n: 1, f: c => c.ref ? `<span class="mono">${nf(c.km)}</span>` : '—' }, { h: 'Abastecimentos', n: 1, f: c => c.ref ? c.A.length : '—' },
+      { h: 'Última utilização', f: c => c.ult ? `${fd(c.ult.data)} · <span class="mono">${nf(c.ult.km_chegada)} km</span>` : c.ref ? '<span class="muted">nenhuma viagem após o abastecimento</span>' : '—' }, { h: 'Conflitos de km', f: c => c.ref ? (c.conflitos ? `<span class="pill p-warn">${c.conflitos}</span>` : '<span class="pill p-ok">0</span>') : '—' }], C, 'Nenhum veículo.')}
+    <p class="muted" style="font-size:12px;margin:10px 0 0">As listas e as exportações abaixo (Excel, CSV e PDF) usam o ciclo de cada veículo, sem misturar veículos. Viagens no mesmo dia do abastecimento entram só se saíram depois do horário dele. Nada é estimado: km ausente aparece como não informada.</p></section>` : ''}
   <section class="kpis"><div class="kpi" style="--tone:var(--cyan)"><span class="k">Viagens</span><span class="v">${T.length}</span></div><div class="kpi" style="--tone:var(--cyan)"><span class="k">Km rodados</span><span class="v">${nf(km)}</span></div><div class="kpi" style="--tone:var(--warn)"><span class="k">Abastecimentos</span><span class="v">${A.length}</span></div><div class="kpi" style="--tone:var(--warn)"><span class="k">Gasto</span><span class="v">${brl0(tot)}</span></div></section>
   <section class="card"><div class="tabs" role="tablist">${Object.entries(tabs).map(([k, l]) => `<button role="tab" data-rt="${k}" class="${S.relTab === k ? 'on' : ''}">${l}</button>`).join('')}</div>${body}
   <header style="margin:16px 0 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
@@ -886,7 +904,7 @@ async function exportXlsx() {
       for (let p = 0; p < partes; p++) {
         const z = await JSZip.loadAsync(tpl); let x = await z.file('xl/worksheets/sheet1.xml').async('string'), soma = 0;
         x = putCell(x, 'A2', 'Veículo: ' + v.nome.toUpperCase()); x = putCell(x, 'C2', 'Placa: ' + v.placa); x = putCell(x, 'F2', 'Km Final: ' + (lk ?? ''));
-        x = putCell(x, 'G2', 'Data Início:  ' + fd(S.rel.ini)); x = putCell(x, 'I2', 'Data Final: ' + fd(S.rel.fim));
+        const pv = relPeriodo(v); x = putCell(x, 'G2', 'Data Início:  ' + fd(pv.ini)); x = putCell(x, 'I2', 'Data Final: ' + fd(pv.fim));
         x = putCell(x, 'J1', 'KM Troca Óleo:' + (v.km_troca_oleo ? ' ' + v.km_troca_oleo : '')); x = putCell(x, 'J2', 'Data Troca Óleo:' + (v.data_troca_oleo ? ' ' + fd(v.data_troca_oleo) : ''));
         I.slice(p * 19, p * 19 + 19).forEach((o, i) => {
           const n = 4 + i, r = o.t;
@@ -896,12 +914,12 @@ async function exportXlsx() {
         });
         x = x.replace('<f>SUM(C4:C22)</f><v>0</v>', `<f>SUM(C4:C22)</f><v>${soma}</v>`);
         z.file('xl/worksheets/sheet1.xml', x);
-        out.push([`diario-bordo-${S.rel.ini}_${S.rel.fim}-${v.placa.replace(/\W/g, '')}${partes > 1 ? '-parte' + (p + 1) : ''}.xlsx`, await z.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })]);
+        out.push([`diario-bordo-${S.rel.ciclo ? 'desde-ultimo-abastecimento-' + pv.ini + '_' + pv.fim : S.rel.ini + '_' + S.rel.fim}-${v.placa.replace(/\W/g, '')}${partes > 1 ? '-parte' + (p + 1) : ''}.xlsx`, await z.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })]);
       }
     }
     if (!out.length) return toast('Nenhum registro no período para exportar.');
     if (out.length === 1) return dl(out[0][1], out[0][0]);
-    const zz = new JSZip(); out.forEach(([n, b]) => zz.file(n, b)); dl(await zz.generateAsync({ type: 'blob' }), `diario-bordo-${S.rel.ini}_${S.rel.fim}.zip`);
+    const zz = new JSZip(); out.forEach(([n, b]) => zz.file(n, b)); dl(await zz.generateAsync({ type: 'blob' }), (S.rel.ciclo ? `diario-bordo-desde-ultimo-abastecimento-${today()}.zip` : `diario-bordo-${S.rel.ini}_${S.rel.fim}.zip`));
     toast(`${out.length} planilhas geradas no .zip (uma por veículo e por bloco de 19 linhas).`);
   } catch (e) { toast('Falha ao exportar o Excel: ' + e.message); }
 }
@@ -911,7 +929,7 @@ function exportCsv() { // mesmo layout do "Exportar CSV" do sistema anterior (re
   T.forEach(r => { const v = DB.veh(r.vehicle_id); R.push([v.nome, v.placa, fd(r.data), r.km_saida, r.km_chegada, r.hora_saida, r.hora_chegada, r.origem_destino, r.motorista, r.visto ? 'OK' : '', r.finalidade, r.usuario_texto, r.km_chegada - r.km_saida]); });
   R.push([], ['Abastecimentos'], ['Veículo', 'Placa', 'Data', 'Hora', 'KM', 'Posto', 'Combustível', 'Litros', 'R$/litro', 'Total', 'Obs.', 'Modalidade']);
   A.forEach(a => { const v = DB.veh(a.vehicle_id); R.push([v.nome, v.placa, fd(a.data), a.hora, a.km ?? '', a.posto, a.combustivel, a.litros, a.preco_litro, a.total, a.obs, a.modalidade === 'req' ? 'Requisição de combustível Masters' : a.modalidade === 'func' ? 'Abastecimento pago pelo Funcionário' : 'Avulso']); });
-  dl(new Blob(['﻿' + R.map(l => l.map(q).join(';')).join('\r\n')], { type: 'text/csv' }), `diario-bordo-${S.rel.ini}-a-${S.rel.fim}.csv`);
+  dl(new Blob(['﻿' + R.map(l => l.map(q).join(';')).join('\r\n')], { type: 'text/csv' }), S.rel.ciclo ? `diario-bordo-desde-ultimo-abastecimento-${today()}.csv` : `diario-bordo-${S.rel.ini}-a-${S.rel.fim}.csv`);
 }
 
 /* ───────────── 6. Usuários ───────────── */
