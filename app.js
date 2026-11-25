@@ -220,7 +220,7 @@ function renderLogin() {
         <h1>Diário de Bordo da frota Masters</h1>
         <p>Viagens, quilometragem, abastecimentos e uso de veículos em um só lugar, com a última quilometragem sempre recuperada do banco e histórico auditado.</p>
       </div>
-      <p class="mono" style="font-size:12px;color:#7F93B8">Versão de apresentação · ${fd(today())}</p>
+      <p class="mono" style="font-size:12px;color:#7F93B8">${window.CLOUD ? "Sistema oficial" : "Versão de apresentação"} · ${fd(today())}</p>
     </section>
     <section class="login-form">
       <form id="lf" autocomplete="on">
@@ -235,6 +235,7 @@ function renderLogin() {
     </section>
   </div>`;
   $$('.demo-users button').forEach(b => b.onclick = () => { $('#l-user').value = b.dataset.u; $('#l-pass').value = 'demo'; $('#l-pass').focus(); });
+  if (window.CLOUD) CLOUD.temAdmin().then(tem => { if (!tem) primeiroAcesso(); });
   $('#lf').onsubmit = async e => {
     e.preventDefault();
     if (window.CLOUD) { const bt = $('#lf button.btn'); bt.disabled = true; try { await CLOUD.login($('#l-user').value, $('#l-pass').value); location.hash = 'painel'; renderShell(); } catch (x) { bt.disabled = false; $('#l-err').innerHTML = `<div class="msg err">${ico('alert')}${esc(x.message)}</div>`; } return; }
@@ -244,6 +245,20 @@ function renderLogin() {
     location.hash = 'painel'; renderShell();
   };
   drawRoutes();
+}
+function primeiroAcesso() {
+  $('#lf').innerHTML = `<div><h2 style="font-size:22px">Primeiro acesso</h2><p class="muted" style="margin:4px 0 0">Defina a senha do administrador <b>MASTERS</b>. Use o código de configuração informado na implantação. Esta tela só aparece enquanto o administrador não existir.</p></div>
+    <label class="fld">Código de configuração<input id="p-cod" autocomplete="off" autocapitalize="characters"></label>
+    <label class="fld">Nova senha do MASTERS<input id="p-s1" type="password" autocomplete="new-password"></label>
+    <label class="fld">Repita a senha<input id="p-s2" type="password" autocomplete="new-password"></label>
+    <div id="l-err"></div><button class="btn" style="justify-content:center">Configurar e entrar</button>`;
+  $('#lf').onsubmit = async e => {
+    e.preventDefault(); const bt = $('#lf button.btn');
+    if ($('#p-s1').value !== $('#p-s2').value) { $('#l-err').innerHTML = '<div class="msg err">As senhas não conferem.</div>'; return; }
+    bt.disabled = true;
+    try { await CLOUD.primeiroAcesso($('#p-cod').value, $('#p-s1').value); location.hash = 'painel'; renderShell(); }
+    catch (x) { bt.disabled = false; $('#l-err').innerHTML = `<div class="msg err">${esc(x.message)}</div>`; }
+  };
 }
 function drawRoutes() {
   const c = $('#routes'); if (!c) return; const r = c.getBoundingClientRect(), dpr = devicePixelRatio || 1; c.width = r.width * dpr; c.height = r.height * dpr;
@@ -270,6 +285,7 @@ function renderShell() {
       ${isAdmin() ? `<div class="grp">Administração</div>${adm.map(navItem).join('')}` : ''}
       <div class="foot">
         <div class="me"><span class="avatar">${esc(S.user.nome.split(' ').map(p => p[0]).slice(0, 2).join(''))}</span><span class="who"><b>${esc(S.user.nome)}</b><span>${isAdmin() ? 'Administrador' : 'Funcionário'} · ${esc(S.user.usuario)}</span></span></div>
+        ${window.CLOUD ? `<button class="lnk" id="mypass" title="Alterar minha senha">${ico('key')}<span class="lbl">Alterar minha senha</span></button>` : ''}
         <button class="lnk" id="collapse" title="Recolher menu">${ico('panel')}<span class="lbl">Recolher menu</span></button>
         <button class="lnk" id="reset" title="Restaurar base de demonstração" ${window.CLOUD ? 'hidden' : ''}>${ico('reset')}<span class="lbl">Restaurar demo</span></button>
         <button class="lnk" id="logout" title="Sair">${ico('logout')}<span class="lbl">Sair</span></button>
@@ -289,6 +305,12 @@ function renderShell() {
   const app = $('#app');
   $('#collapse').onclick = () => { app.classList.toggle('collapsed'); store.set('dbm-side', app.classList.contains('collapsed') ? '1' : '0'); };
   $('#burger').onclick = $('#more').onclick = () => app.classList.add('open');
+  $('#mypass')?.addEventListener('click', () => dialog(`<form id="mp"><div class="dh"><h2>Alterar minha senha</h2></div><div class="dialog-body">
+    <label class="fld">Nova senha<input id="mp1" type="password" autocomplete="new-password"></label><label class="fld">Repita a senha<input id="mp2" type="password" autocomplete="new-password"></label><div id="mp-err"></div></div>
+    <div class="dialog-foot"><button type="button" class="btn sec" id="c">Cancelar</button><button class="btn">Salvar</button></div></form>`, d => {
+    $('#c', d).onclick = closeDlg;
+    $('#mp', d).onsubmit = async e => { e.preventDefault(); if ($('#mp1').value !== $('#mp2').value) { $('#mp-err').innerHTML = '<div class="msg err">As senhas não conferem.</div>'; return; } try { await CLOUD.minhaSenha($('#mp1').value); closeDlg(); toast('Senha alterada.'); } catch (x) { $('#mp-err').innerHTML = `<div class="msg err">${esc(x.message)}</div>`; } };
+  }));
   $('#scrim').onclick = () => app.classList.remove('open');
   $('#logout').onclick = async () => { DB.audit('LOGOUT', 'usuario', S.user.id, `${S.user.nome} saiu.`); DB.save(); if (window.CLOUD) await CLOUD.logout().catch(() => { }); S.user = null; store.del(SESSION_KEY); renderLogin(); };
   $('#reset').onclick = () => dialog(`<div class="dh"><h2>Restaurar base de demonstração?</h2></div><div class="dialog-body"><p>Todos os registros feitos nesta demonstração, neste navegador, serão substituídos pela base fictícia original. O sistema oficial não é afetado.</p></div><div class="dialog-foot"><button class="btn sec" id="c">Cancelar</button><button class="btn danger" id="o">Restaurar</button></div>`, d => { $('#c', d).onclick = closeDlg; $('#o', d).onclick = () => { DB.reset(); const u = DB.d.users.find(x => x.usuario === S.user.usuario); S.user = u; store.set(SESSION_KEY, u.id); closeDlg(); route(); toast('Base de demonstração restaurada.'); }; });
@@ -672,16 +694,17 @@ function rUsuarios() {
     { h: 'Situação', f: u => u.ativo ? '<span class="pill p-ok">Ativo</span>' : '<span class="pill p-mute">Inativo</span>' },
     { h: '', f: u => u.papel === 'admin' ? '' : `<button class="btn sm sec" data-edu="${u.id}">Editar</button>` },
   ], DB.d.users)}
-  <p class="muted" style="font-size:12px;margin:10px 0 0">MASTERS é o único administrador e não pode ser responsável por veículo. Na versão oficial, o novo usuário recebe um convite por e-mail do Supabase Auth para definir a própria senha (etapa de consolidação).</p></section>`;
+  <p class="muted" style="font-size:12px;margin:10px 0 0">MASTERS é o único administrador e não pode ser responsável por veículo. O acesso é feito só com usuário e senha, sem e-mail. O administrador define a senha inicial e pode redefini-la; cada funcionário pode trocá-la em "Alterar minha senha".</p></section>`;
 }
 function userDialog(u) {
   dialog(`<form id="uf"><div class="dh"><h2>${u ? 'Editar usuário' : 'Novo usuário'}</h2></div><div class="dialog-body">
     <label class="fld">Usuário (login)<input id="u-us" value="${esc(u?.usuario)}" ${u ? 'readonly' : ''} placeholder="Ex.: JOAO"></label>
     <label class="fld">Nome completo<input id="u-nm" value="${esc(u?.nome)}"></label>
+    ${window.CLOUD ? `<label class="fld">${u ? 'Nova senha (deixe em branco para manter)' : 'Senha inicial'}<input id="u-pw" type="password" autocomplete="new-password"><span class="hint muted">Mínimo de 6 caracteres. O funcionário pode trocar depois em "Alterar minha senha".</span></label>` : ''}
     ${u ? `<label class="check"><input type="checkbox" id="u-at" ${u.ativo ? 'checked' : ''}> Usuário ativo</label>` : '<p class="muted" style="margin:0;font-size:12px">Perfil: Funcionário. Autorize veículos em Alocação de veículos.</p>'}
     <div id="u-err"></div></div><div class="dialog-foot"><button type="button" class="btn sec" id="c">Cancelar</button><button class="btn">Salvar</button></div></form>`, d => {
     $('#c', d).onclick = closeDlg;
-    $('#uf', d).onsubmit = async e => { e.preventDefault(); try { await DB.saveUser({ id: u?.id, usuario: $('#u-us').value, nome: $('#u-nm').value, ativo: u ? $('#u-at').checked : true }); closeDlg(); toast('Usuário salvo.'); route(); } catch (x) { $('#u-err').innerHTML = `<div class="msg err">${esc(x.message)}</div>`; } };
+    $('#uf', d).onsubmit = async e => { e.preventDefault(); try { await DB.saveUser({ id: u?.id, usuario: $('#u-us').value, nome: $('#u-nm').value, ativo: u ? $('#u-at').checked : true, senha: $('#u-pw')?.value || '' }); closeDlg(); toast('Usuário salvo.'); route(); } catch (x) { $('#u-err').innerHTML = `<div class="msg err">${esc(x.message)}</div>`; } };
   });
 }
 

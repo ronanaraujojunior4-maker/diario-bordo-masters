@@ -39,7 +39,7 @@ Bibliotecas por CDN: Chart.js 4.4.1 (gráficos) e SheetJS 0.18.5 (Excel).
 ## Pendências (Prioridade 2 — consolidação)
 
 1. ~~Projeto Supabase exclusivo~~ criado (conta e org `diario-bordo-masters`, plano Free) e esquema aplicado; RLS testada no banco com usuários simulados (2026-11-25).
-2. Criar os acessos em Supabase → Authentication → Add user (e-mail `usuario@diario.masters`, Auto Confirm) e promover MASTERS: `update public.profiles set papel = 'admin' where usuario = 'MASTERS';`
+2. Acesso só por nome de usuário e senha (sem e-mail para o usuário): o MASTERS é configurado na tela "Primeiro acesso" com o código de configuração; depois ele cria os funcionários e redefine senhas pelo app (função de servidor `supabase/functions/usuarios`, que guarda a chave secreta só no servidor). Internamente o Supabase Auth usa `usuario@diario.masters`, nunca exibido.
 3. Cadastrar veículos e alocações pelo próprio app (MASTERS) e testar login real em celular e computador.
 4. Edição de registros próprios e correção administrativa com auditoria.
 5. Importação histórica do sistema anterior (depende de exportação/backup do Firebase).

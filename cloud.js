@@ -56,6 +56,14 @@
       sb.channel('uso').on('postgres_changes', { event: '*', schema: 'public', table: 'vehicle_usage' }, async () => { await recarregar(); if (['painel', 'registro', 'liberacoes', 'alocacao'].includes(S.route) && !$('#dlg').open) route(); }).subscribe();
       return p;
     },
+    async fn(body) { // função de servidor "usuarios" (a chave secreta fica só no servidor)
+      const { data, error } = await sb.functions.invoke('usuarios', { body });
+      if (error) { let m = error.message; try { m = (await error.context.json()).erro || m; } catch { } throw Error(m); }
+      if (data?.erro) throw Error(data.erro); return data;
+    },
+    async temAdmin() { const { data, error } = await sb.rpc('tem_admin'); return error ? true : !!data; },
+    async primeiroAcesso(codigo, senha) { await this.fn({ acao: 'primeiro_acesso', codigo, senha }); return this.login('MASTERS', senha); },
+    async minhaSenha(senha) { if (String(senha).length < 6) throw Error('A senha precisa ter pelo menos 6 caracteres.'); must(await sb.auth.updateUser({ password: senha })); },
     async login(usuario, senha) { const r = must(await sb.auth.signInWithPassword({ email: emailDe(usuario), password: senha })); return this.perfil(r.user.id); },
     async logout() { sb.removeAllChannels(); await sb.auth.signOut(); },
     async ensureSince(d) { if (d && since && d < since) await carregar(d); },
@@ -80,8 +88,12 @@
         await recarregar();
       };
       DB.saveUser = async u => {
-        if (!u.id) throw Error(`Crie o acesso no painel do Supabase (Authentication → Add user, e-mail ${emailDe(u.usuario || 'usuario')}, "Auto confirm"). O perfil aparece aqui automaticamente.`);
-        must(await sb.from('profiles').update({ nome: u.nome, ativo: u.ativo }).eq('id', u.id)); await recarregar();
+        if (!u.id) await CLOUD.fn({ acao: 'criar', usuario: u.usuario, nome: u.nome, senha: u.senha || '' });
+        else {
+          must(await sb.from('profiles').update({ nome: u.nome, ativo: u.ativo }).eq('id', u.id));
+          if (u.senha) await CLOUD.fn({ acao: 'senha', id: u.id, senha: u.senha });
+        }
+        await recarregar();
       };
       window.doImport = async () => {
         const P = S.importPreview, novos = P.rows.filter(x => x.st === 'novo'), T = [], A = [];
