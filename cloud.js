@@ -18,25 +18,27 @@
   const resumo = d => { if (!d) return ''; const x = d.depois || d.antes || {}; return Object.entries(x).filter(([k, v]) => v != null && v !== '' && !/^(id|criado_em|user_id|vehicle_id|placa_norm)$/.test(k)).slice(0, 6).map(([k, v]) => `${k}: ${v}`).join(' · '); };
 
   async function carregar(desde) {
-    const [profiles, vehicles, auths, lk] = await Promise.all([
-      all(() => sb.from('profiles').select('id,usuario,nome,papel,ativo,excluido_em').order('nome')),
+    const [profiles, vehicles, auths, lk, lf] = await Promise.all([
+      all(() => sb.from('profiles').select('id,usuario,nome,papel,ativo,excluido_em,opera_veiculos').order('nome')),
       all(() => sb.from('vehicles').select('id,nome,modelo,placa,responsavel_padrao,km_inicial,km_troca_oleo,data_troca_oleo,ativo,obs,excluido_em').order('nome')),
       all(() => sb.from('vehicle_authorizations').select('vehicle_id,user_id')),
       all(() => sb.from('vehicle_last_km').select('vehicle_id,ultima_km')),
+      all(() => sb.from('vehicle_last_fueling').select('vehicle_id,data')),
     ]);
-    const [usage, trips, fuelings, audit, acessos, privados] = await Promise.all([
+    lf.forEach(f => { if (f.data < desde) desde = f.data; }); // o ciclo de cada veículo começa no seu último abastecimento, mesmo que antigo
+    const [usage, trips, fuelings, audit, acessos, codigos] = await Promise.all([
       all(() => sb.from('vehicle_usage').select('*').or(`status.eq.ativa,inicio.gte.${desde}`).order('inicio', { ascending: false })),
       all(() => sb.from('trips').select('*').is('excluido_em', null).gte('data', desde).order('data', { ascending: false })),
       all(() => sb.from('fuelings').select('*').is('excluido_em', null).gte('data', desde).order('data', { ascending: false })),
       isAdmin() ? must(await sb.from('audit_log').select('*').order('id', { ascending: false }).limit(200)) : [],
       isAdmin() ? must(await sb.from('access_requests').select('*').order('criado_em', { ascending: false }).limit(100)) : [],
-      isAdmin() ? must(await sb.from('profile_private').select('user_id,email_recuperacao')) : [],
+      isAdmin() ? must(await sb.from('recovery_codes').select('id,user_id,criado_por,criado_em,expira_em,usado_em,revogado_em,tentativas,pedido_id').order('criado_em', { ascending: false }).limit(100)) : [],
     ]);
     since = desde; carregadoEm = Date.now(); lastKmView = new Map(lk.map(r => [r.vehicle_id, r.ultima_km]));
     DB.d = {
       versao: 1, users: profiles,
       vehicles: vehicles.map(v => ({ ...v, responsavel: v.responsavel_padrao, autorizados: auths.filter(a => a.vehicle_id === v.id).map(a => a.user_id) })),
-      usage, trips, fuelings, acessos, privados: Object.fromEntries(privados.filter(x => x.email_recuperacao).map(x => [x.user_id, x.email_recuperacao])),
+      usage, trips, fuelings, acessos, codigos,
       audit: audit.map(a => ({ id: a.id, em: a.em, user_id: a.user_id, acao: `${a.acao}_${a.entidade}`, entidade: a.entidade, entidade_id: a.entidade_id, detalhes: resumo(a.detalhes) })),
     };
   }
@@ -52,7 +54,7 @@
       return data.session ? this.perfil(data.session.user.id) : null;
     },
     async perfil(id) {
-      const p = must(await sb.from('profiles').select('id,usuario,nome,papel,ativo,trocar_senha').eq('id', id).single());
+      const p = must(await sb.from('profiles').select('id,usuario,nome,papel,ativo,trocar_senha,opera_veiculos').eq('id', id).single());
       if (!p.ativo) { await sb.auth.signOut(); throw Error('Usuário inativo. Fale com o administrador.'); }
       S.user = p; await carregar(isoDay(addDays(new Date(), -JANELA_DIAS)));
       // Atualiza os indicadores quando o app volta a ficar visível (sem consultas contínuas, para poupar o plano gratuito).
@@ -68,14 +70,11 @@
     async temAdmin() { const { data, error } = await sb.rpc('tem_admin'); return error ? true : !!data; },
     async primeiroAcesso(codigo, senha) { await this.fn({ acao: 'primeiro_acesso', codigo, senha }); return this.login('MASTERS', senha); },
     async minhaSenha(senha) { if (String(senha).length < 6) throw Error('A senha precisa ter pelo menos 6 caracteres.'); must(await sb.auth.updateUser({ password: senha })); await sb.rpc('senha_trocada'); if (S.user) S.user.trocar_senha = false; },
-    recuperarEmail(email) { return this.fn({ acao: 'recuperar_email', email }); },
     pedirAjuda(d) { return this.fn({ acao: 'pedir_ajuda', ...d }); },
-    async atender(d) { const r = await this.fn({ acao: 'atender', ...d }); await recarregar(); return r; },
-    async novaSenhaPeloLink(token_hash, senha) { // token de recuperação do Supabase Auth: uso único e com validade
-      const { error } = await sb.auth.verifyOtp({ token_hash, type: 'recovery' });
-      if (error) throw Error('Link inválido ou expirado. Peça um novo link em "Esqueci minha senha".');
-      try { must(await sb.auth.updateUser({ password: senha })); await sb.rpc('senha_trocada'); } finally { S.user = null; await sb.auth.signOut(); }
-    },
+    usarCodigo(usuario, codigo, senha) { return this.fn({ acao: 'usar_codigo', usuario, codigo, senha }); }, // validação e troca de senha só no servidor
+    async gerarCodigo(d) { const r = await this.fn({ acao: 'gerar_codigo', ...d }); await recarregar(); return r; },
+    async revogarCodigo(id) { await this.fn({ acao: 'revogar_codigo', id }); await recarregar(); },
+    async recusarPedido(id) { await this.fn({ acao: 'recusar_pedido', id }); await recarregar(); },
     async login(usuario, senha) { const r = must(await sb.auth.signInWithPassword({ email: emailDe(usuario), password: senha })); return this.perfil(r.user.id); },
     async logout() { sb.removeAllChannels(); await sb.auth.signOut(); },
     async ensureSince(d) { if (d && since && d < since) await carregar(d); },
@@ -84,7 +83,7 @@
       DB.audit = () => { }; // a auditoria oficial é gravada pelos gatilhos do banco
       const lk0 = DB.lastKm.bind(DB);
       DB.lastKm = vid => { const r = lk0(vid), v = lastKmView.get(vid); return v != null && (r.km == null || v > r.km) ? { km: v, fonte: 'histórico completo do veículo (banco)', trip: null } : r; };
-      DB.assumir = async vid => { if (isAdmin()) throw Error('Conta de administrador não assume veículos.'); must(await sb.rpc('assumir_veiculo', { p_vehicle: vid })); await recarregar(); };
+      DB.assumir = async vid => { if (!podeOperar()) throw Error('Esta conta é exclusivamente administrativa e não assume veículos.'); must(await sb.rpc('assumir_veiculo', { p_vehicle: vid })); await recarregar(); };
       DB.liberar = async (vid, just) => { must(await sb.rpc('liberar_veiculo', { p_vehicle: vid, p_justificativa: just || null })); await recarregar(); };
       const ins = async (tab, row) => { const d = must(await sb.from(tab).upsert(row, { onConflict: 'id', ignoreDuplicates: true }).select('id')); await recarregar(); return d.length ? 'ok' : 'repetido'; };
       DB.addTrip = t => ins('trips', { id: t.id, vehicle_id: t.vehicle_id, user_id: S.user.id, data: t.data, hora_saida: t.hora_saida || null, hora_chegada: t.hora_chegada || null, km_saida: t.km_saida, km_chegada: t.km_chegada, origem_destino: t.origem_destino, motorista: t.motorista, finalidade: t.finalidade || null, visto: t.visto, usuario_texto: t.usuario_texto, obs: t.obs || null, origem: 'app' });
@@ -104,7 +103,7 @@
         let id = u.id;
         if (!id) id = (await CLOUD.fn({ acao: 'criar', usuario: u.usuario, nome: u.nome, senha: u.senha || '' })).id;
         else {
-          must(await sb.from('profiles').update({ nome: u.nome, ativo: u.ativo }).eq('id', u.id));
+          must(await sb.from('profiles').update({ nome: u.nome, ativo: u.ativo, ...(u.opera_veiculos !== undefined ? { opera_veiculos: u.opera_veiculos } : {}) }).eq('id', u.id));
           if (u.senha) await CLOUD.fn({ acao: 'senha', id: u.id, senha: u.senha });
         }
         if (u.email !== undefined && (u.email || null) !== (DB.d.privados?.[id] || null)) {

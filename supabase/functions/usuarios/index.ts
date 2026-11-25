@@ -1,42 +1,30 @@
 // Gestão de acessos por nome de usuário (sem e-mail no login). Publicada no Supabase com verify_jwt = false
 // (a própria função valida a sessão do administrador nas ações administrativas).
 // O Supabase Auth exige um e-mail interno: USUARIO -> usuario@diario.masters (nunca exibido nem usado para envio).
-// Recuperação: o link usa o token de recuperação do próprio Supabase Auth (uso único, expira) e é enviado ao
-// "e-mail de recuperação" cadastrado pelo administrador. Envio pelo Brevo (plano gratuito), com a chave só no servidor:
-//   BREVO_API_KEY, EMAIL_REMETENTE (e-mail verificado no Brevo) e, opcional, APP_URL (endereço do app).
+// Recuperação de senha: o administrador gera um código temporário (só o hash fica no banco, HMAC com a chave do servidor);
+// o funcionário informa usuário + código + nova senha. Sem e-mail, SMTP ou serviço externo.
 // A chave service_role fica só no servidor (variável de ambiente da função).
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
 
 const DOM = 'diario.masters';
-const APP_URL_PADRAO = 'https://ronanaraujojunior4-maker.github.io/diario-bordo-masters/';
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type', 'Access-Control-Allow-Methods': 'POST, OPTIONS' };
 const out = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
-const norm = (u: string) => String(u ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const norm = (u: string) => String(u ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 const txt = (v: unknown, n: number) => String(v ?? '').trim().slice(0, n);
-const RX_EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-const GENERICO = 'Se houver uma conta com esse e-mail, enviaremos em alguns minutos um link para criar uma nova senha. Confira também a caixa de spam. O link vale por 1 hora e só pode ser usado uma vez.';
+const VALIDADE_MIN = 120, MAX_TENTATIVAS = 5, MAX_FALHAS_HORA = 30;
+const INVALIDO = 'Usuário ou código inválido, expirado ou já utilizado. Peça um novo código ao administrador.';
 
-function senhaTemporaria() { // 10 caracteres aleatórios, sem caracteres ambíguos
-  const A = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789', b = crypto.getRandomValues(new Uint8Array(10));
-  return Array.from(b, x => A[x % A.length]).join('');
+function gerarCodigo() { // 8 caracteres (32 símbolos sem ambíguos) = 40 bits; exibido como XXXX-XXXX
+  const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789', b = crypto.getRandomValues(new Uint8Array(8));
+  return Array.from(b, x => A[x % 32]).join('');
 }
-
-// deno-lint-ignore no-explicit-any
-async function enviarLink(admin: any, usuario: string, nome: string, email: string): Promise<string | null> {
-  const key = Deno.env.get('BREVO_API_KEY'), de = Deno.env.get('EMAIL_REMETENTE'), app = Deno.env.get('APP_URL') || APP_URL_PADRAO;
-  if (!key || !de) return 'O envio de e-mail ainda não foi configurado (BREVO_API_KEY e EMAIL_REMETENTE).';
-  const { data, error } = await admin.auth.admin.generateLink({ type: 'recovery', email: `${usuario.toLowerCase()}@${DOM}` });
-  if (error) return error.message;
-  const link = `${app}#recuperar=${encodeURIComponent(data.properties.hashed_token)}`, nm = nome.replace(/[<>&"]/g, '');
-  const r = await fetch('https://api.brevo.com/v3/smtp/email', {
-    method: 'POST', headers: { 'api-key': key, 'Content-Type': 'application/json', accept: 'application/json' },
-    body: JSON.stringify({
-      sender: { name: 'Diário de Bordo Masters', email: de }, to: [{ email, name: nm }], subject: 'Recuperação de senha – Diário de Bordo Masters',
-      htmlContent: `<p>Olá, ${nm}.</p><p>Recebemos um pedido para criar uma nova senha do usuário <b>${usuario}</b> no Diário de Bordo Masters.</p><p><a href="${link}">Criar nova senha</a></p><p>O link vale por 1 hora e só pode ser usado uma vez. Se você não pediu, ignore este e-mail: sua senha atual continua valendo.</p>`,
-    }),
-  });
-  return r.ok ? null : `Falha no envio do e-mail (${r.status}).`;
+const normCod = (c: unknown) => String(c ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+async function hashCodigo(userId: string, codigo: string) { // HMAC-SHA256 com a chave do servidor: o hash sozinho não permite testar códigos
+  const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(`${userId}:${codigo}`));
+  return Array.from(new Uint8Array(sig), x => x.toString(16).padStart(2, '0')).join('');
 }
+function iguais(a: string, b: string) { if (a.length !== b.length) return false; let d = 0; for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i); return d === 0; }
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return out({ ok: true });
@@ -62,22 +50,31 @@ Deno.serve(async (req) => {
       return out({ ok: true });
     }
 
-    // ── Recuperação pelo próprio usuário: resposta sempre igual (não revela se o e-mail existe) ──
-    if (b.acao === 'recuperar_email') {
-      const email = txt(b.email, 200).toLowerCase();
-      if (!RX_EMAIL.test(email)) return out({ erro: 'Informe um e-mail válido.' }, 400);
-      const { count } = await admin.from('audit_log').select('id', { count: 'exact', head: true }).eq('acao', 'RECUPERACAO_EMAIL').gte('em', desde(60));
-      if ((count ?? 0) >= 30) return out({ ok: true, mensagem: GENERICO }); // limite geral por hora
-      const { data: pps } = await admin.from('profile_private').select('user_id,email_recuperacao').not('email_recuperacao', 'is', null);
-      const pp = (pps ?? []).find((x: { email_recuperacao: string }) => x.email_recuperacao.toLowerCase() === email);
-      const { data: p } = pp ? await admin.from('profiles').select('id,usuario,nome,ativo').eq('id', pp.user_id).single() : { data: null };
-      let falha: string | null = 'nenhuma conta ativa com este e-mail';
-      if (p?.ativo) {
-        const { count: c2 } = await admin.from('audit_log').select('id', { count: 'exact', head: true }).eq('acao', 'RECUPERACAO_EMAIL').eq('entidade_id', p.id).gte('em', desde(60));
-        falha = (c2 ?? 0) >= 3 ? 'limite de 3 pedidos por hora' : await enviarLink(admin, p.usuario, p.nome, pp!.email_recuperacao);
+    // ── Recuperação pelo funcionário com o código recebido do administrador (sem login) ──
+    if (b.acao === 'usar_codigo') {
+      const cod = normCod(b.codigo);
+      if (senha.length < 6) return out({ erro: 'A nova senha precisa ter pelo menos 6 caracteres.' }, 400);
+      const { count: falhas } = await admin.from('audit_log').select('id', { count: 'exact', head: true }).eq('acao', 'RECUPERACAO_CODIGO_FALHA').gte('em', desde(60));
+      if ((falhas ?? 0) >= MAX_FALHAS_HORA) return out({ erro: 'Muitas tentativas inválidas. Aguarde alguns minutos e tente de novo.' }, 429);
+      const falha = async (user_id: string | null, motivo: string) => { await admin.from('audit_log').insert({ acao: 'RECUPERACAO_CODIGO_FALHA', entidade: 'acesso', entidade_id: user_id, detalhes: { usuario, motivo } }); return out({ erro: INVALIDO }, 400); };
+      const { data: p } = await admin.from('profiles').select('id,usuario,ativo,excluido_em').eq('usuario', usuario).maybeSingle();
+      if (!p || !p.ativo || p.excluido_em) return falha(p?.id ?? null, 'usuário inexistente ou inativo');
+      const { data: c } = await admin.from('recovery_codes').select('id,code_hash,expira_em,tentativas').eq('user_id', p.id).is('usado_em', null).is('revogado_em', null).order('criado_em', { ascending: false }).limit(1).maybeSingle();
+      if (!c) return falha(p.id, 'sem código pendente');
+      if (new Date(c.expira_em) < new Date()) return falha(p.id, 'código expirado');
+      if (cod.length !== 8 || !iguais(await hashCodigo(p.id, cod), c.code_hash)) {
+        const t = c.tentativas + 1;
+        await admin.from('recovery_codes').update(t >= MAX_TENTATIVAS ? { tentativas: t, revogado_em: new Date().toISOString() } : { tentativas: t }).eq('id', c.id);
+        return falha(p.id, t >= MAX_TENTATIVAS ? 'código revogado após 5 tentativas erradas' : `código incorreto (tentativa ${t} de ${MAX_TENTATIVAS})`);
       }
-      await admin.from('audit_log').insert({ acao: 'RECUPERACAO_EMAIL', entidade: 'acesso', entidade_id: p?.id ?? null, detalhes: { enviado: !falha, motivo: falha, usuario: p?.usuario ?? null } });
-      return out({ ok: true, mensagem: GENERICO });
+      // Marca como usado antes de trocar a senha (uso único mesmo com envios simultâneos).
+      const { data: ok } = await admin.from('recovery_codes').update({ usado_em: new Date().toISOString() }).eq('id', c.id).is('usado_em', null).select('id');
+      if (!ok?.length) return falha(p.id, 'código já utilizado');
+      const { error } = await admin.auth.admin.updateUserById(p.id, { password: senha }); // altera somente a credencial
+      if (error) { await admin.from('recovery_codes').update({ usado_em: null }).eq('id', c.id); throw error; }
+      await admin.from('profiles').update({ trocar_senha: false }).eq('id', p.id);
+      await admin.from('audit_log').insert({ user_id: p.id, acao: 'RECUPERACAO_CODIGO_USADO', entidade: 'acesso', entidade_id: p.id, detalhes: { usuario: p.usuario, codigo_id: c.id } });
+      return out({ ok: true, mensagem: 'Senha alterada. Entre com o seu usuário e a nova senha.' });
     }
 
     // ── Pedido de ajuda administrativa (sem login) ──
@@ -134,32 +131,28 @@ Deno.serve(async (req) => {
       await admin.from('audit_log').insert({ user_id: me.user.id, acao: 'EXCLUIR_USUARIO', entidade: 'usuario', entidade_id: alvo.id, detalhes: { antes: alvo, motivo } });
       return out({ ok: true });
     }
-    if (b.acao === 'atender') { // atendimento de pedido de ajuda, depois de confirmar a identidade
-      const verificacao = txt(b.verificacao, 300), resolucao = txt(b.resolucao, 300);
-      if (!['senha_temporaria', 'enviar_link', 'recusar'].includes(b.tipo)) return out({ erro: 'Escolha como atender o pedido.' }, 400);
-      if (b.tipo !== 'recusar' && verificacao.length < 5) return out({ erro: 'Descreva como a identidade foi confirmada.' }, 400);
-      const { data: r } = await admin.from('access_requests').select('*').eq('id', b.id).single();
-      if (!r || r.status !== 'aberta') return out({ erro: 'Pedido não encontrado ou já atendido.' }, 404);
-      const alvoId = b.user_id || r.user_id;
-      const { data: alvo } = alvoId ? await admin.from('profiles').select('id,usuario,nome,ativo').eq('id', alvoId).single() : { data: null };
-      if (b.tipo !== 'recusar' && !alvo) return out({ erro: 'Escolha o usuário cadastrado que corresponde ao pedido.' }, 400);
-      let temp: string | null = null;
-      if (b.tipo === 'senha_temporaria') {
-        temp = senhaTemporaria();
-        const { error } = await admin.auth.admin.updateUserById(alvo!.id, { password: temp });
-        if (error) throw error;
-        await admin.from('profiles').update({ trocar_senha: true }).eq('id', alvo!.id);
-      }
-      if (b.tipo === 'enviar_link') {
-        const { data: pp } = await admin.from('profile_private').select('email_recuperacao').eq('user_id', alvo!.id).maybeSingle();
-        if (!pp?.email_recuperacao) return out({ erro: 'Este usuário não tem e-mail de recuperação. Cadastre em Usuários ou use a senha temporária.' }, 400);
-        const falha = await enviarLink(admin, alvo!.usuario, alvo!.nome, pp.email_recuperacao);
-        if (falha) return out({ erro: falha }, 400);
-      }
-      const padrao: Record<string, string> = { senha_temporaria: 'Senha temporária entregue; troca obrigatória no próximo acesso.', enviar_link: 'Link de recuperação enviado ao e-mail cadastrado.', recusar: 'Pedido recusado.' };
-      await admin.from('access_requests').update({ status: b.tipo === 'recusar' ? 'recusada' : 'atendida', user_id: alvo?.id ?? r.user_id, verificacao: verificacao || null, resolucao: resolucao || padrao[b.tipo], atendido_por: me.user.id, atendido_em: new Date().toISOString() }).eq('id', r.id);
-      await admin.from('audit_log').insert({ user_id: me.user.id, acao: 'RECUPERACAO_ADMIN', entidade: 'acesso', entidade_id: alvo?.id ?? null, detalhes: { pedido: r.id, tipo: b.tipo, usuario: alvo?.usuario ?? r.usuario_informado, verificacao, resolucao: resolucao || padrao[b.tipo] } });
-      return out({ ok: true, senha_temporaria: temp }); // mostrada uma única vez ao administrador; não fica gravada
+    if (b.acao === 'gerar_codigo') { // código temporário para o funcionário criar nova senha
+      const { data: alvo } = await admin.from('profiles').select('id,usuario,nome,ativo,excluido_em').eq('id', b.user_id).single();
+      if (!alvo || !alvo.ativo || alvo.excluido_em) return out({ erro: 'Usuário não encontrado ou inativo.' }, 404);
+      const agora = new Date().toISOString();
+      await admin.from('recovery_codes').update({ revogado_em: agora, revogado_por: me.user.id }).eq('user_id', alvo.id).is('usado_em', null).is('revogado_em', null); // só um código válido por vez
+      const codigo = gerarCodigo(), expira = new Date(Date.now() + VALIDADE_MIN * 60000).toISOString();
+      const { data: c, error } = await admin.from('recovery_codes').insert({ user_id: alvo.id, code_hash: await hashCodigo(alvo.id, codigo), criado_por: me.user.id, expira_em: expira, pedido_id: b.pedido_id || null }).select('id').single();
+      if (error) throw error;
+      if (b.pedido_id) await admin.from('access_requests').update({ status: 'atendida', user_id: alvo.id, verificacao: txt(b.verificacao, 300) || null, resolucao: 'Código de recuperação gerado.', atendido_por: me.user.id, atendido_em: agora }).eq('id', b.pedido_id).eq('status', 'aberta');
+      await admin.from('audit_log').insert({ user_id: me.user.id, acao: 'RECUPERACAO_CODIGO_GERADO', entidade: 'acesso', entidade_id: alvo.id, detalhes: { usuario: alvo.usuario, codigo_id: c.id, expira_em: expira, pedido: b.pedido_id || null } });
+      return out({ ok: true, codigo: codigo.slice(0, 4) + '-' + codigo.slice(4), expira_em: expira }); // exibido uma única vez; não fica gravado
+    }
+    if (b.acao === 'revogar_codigo') {
+      const { data: c } = await admin.from('recovery_codes').update({ revogado_em: new Date().toISOString(), revogado_por: me.user.id }).eq('id', b.id).is('usado_em', null).is('revogado_em', null).select('id,user_id');
+      if (!c?.length) return out({ erro: 'Código não está mais pendente.' }, 400);
+      await admin.from('audit_log').insert({ user_id: me.user.id, acao: 'RECUPERACAO_CODIGO_REVOGADO', entidade: 'acesso', entidade_id: c[0].user_id, detalhes: { codigo_id: b.id } });
+      return out({ ok: true });
+    }
+    if (b.acao === 'recusar_pedido') {
+      await admin.from('access_requests').update({ status: 'recusada', resolucao: txt(b.resolucao, 300) || 'Pedido recusado.', atendido_por: me.user.id, atendido_em: new Date().toISOString() }).eq('id', b.id).eq('status', 'aberta');
+      await admin.from('audit_log').insert({ user_id: me.user.id, acao: 'RECUPERACAO_PEDIDO_RECUSADO', entidade: 'acesso', entidade_id: null, detalhes: { pedido: b.id } });
+      return out({ ok: true });
     }
     return out({ erro: 'Ação desconhecida.' }, 400);
   } catch (e) {

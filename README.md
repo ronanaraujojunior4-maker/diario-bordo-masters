@@ -21,7 +21,7 @@ Sistema novo e independente. Não usa o código, o Firebase nem a publicação d
 | `assets/` | Logotipo original da Masters e ícones |
 | `cloud.js`, `config.js` | Conexão com o Supabase (somente chave pública) |
 | `manifest.webmanifest`, `sw.js` | Instalação na tela inicial; o service worker nunca guarda dados do banco |
-| `supabase/migrations/` | 001 esquema/RLS/auditoria/última km; 002 permissões de gatilhos; 003 primeiro acesso; 004 importação só pelo administrador; 005 recuperação de acesso; 006 edição e exclusão lógica |
+| `supabase/migrations/` | 001 esquema/RLS/auditoria/última km; 002 permissões de gatilhos; 003 primeiro acesso; 004 importação só pelo administrador; 005 recuperação de acesso; 006 edição e exclusão lógica; 007 perfil híbrido, último abastecimento por veículo e códigos de recuperação |
 | `supabase/manual/005b_ronan_admin.sql` | Trecho rodado manualmente no SQL Editor (vários administradores; RONAN administrador) |
 | `supabase/functions/usuarios` | Criação de usuários e redefinição de senha (chave secreta só no servidor) |
 | `supabase/teste_regras.sql` | Teste das regras (executado em Postgres local: todas passaram) |
@@ -30,13 +30,17 @@ Bibliotecas por CDN: Chart.js 4.4.1, SheetJS 0.18.5, JSZip 3.10.1 e supabase-js 
 
 ## Regras implementadas
 
-- Administradores: MASTERS e RONAN. Administrador nunca assume, reserva ou é responsável por veículo (tela e banco). O banco impede remover o último administrador ativo.
-- Visão geral: "Resumo da Operação" do mês (veículos em uso agora, abastecimentos, km sem repetição e veículo mais utilizado), calculado dos dados já carregados, sem consulta extra.
-- Recuperação de acesso:
-  - Na tela de login, "Esqueci minha senha ou preciso recuperar meu acesso".
-  - Link por e-mail: usa o token de recuperação do Supabase Auth (uso único, 1 hora), enviado pela função `usuarios` ao e-mail de recuperação cadastrado. A resposta é sempre a mesma, sem revelar se o e-mail existe.
-  - Ajuda administrativa: o pedido vai para Administração → Recuperação de acesso. O administrador confirma a identidade e gera uma senha temporária (troca obrigatória no próximo acesso) ou envia o link. Tudo fica na auditoria.
-  - O e-mail de recuperação fica em `profile_private` (visível só para administradores e para o próprio usuário).
+- Perfis: MASTERS é administrador exclusivamente administrativo (nunca assume, reserva ou é responsável por veículo; garantido no banco). RONAN é administrador e também operacional (`profiles.opera_veiculos = true`): assume e libera o veículo sob sua responsabilidade e registra, edita e exclui as próprias viagens e abastecimentos. A regra fica em `pode_operar()` (RLS, `assumir_veiculo` e gatilho de responsável); o campo é por usuário, em Usuários → "Também opera veículos". O banco impede remover o último administrador ativo.
+- Visão geral:
+  - Indicadores por ciclo de abastecimento: o ciclo de cada veículo vai do seu último abastecimento válido até agora (nunca usa a data de outro veículo). Viagens e km do ciclo sem repetição, por veículo (quadro "Ciclo atual por veículo") e consolidados (somas). Sem abastecimento: "Sem referência de abastecimento".
+  - Consumo médio = km ÷ litros consumidos. O abastecimento não registra "tanque cheio", então litros abastecidos não equivalem aos consumidos: o sistema mostra "Dados insuficientes" em vez de estimar.
+  - "Frota em operação": em uso, disponíveis e reservados (reserva ainda não existe no sistema: 0), só veículos ativos e não excluídos.
+  - "Resumo da Operação" do mês (veículos em uso agora, abastecimentos, km sem repetição e veículo mais utilizado).
+- Recuperação de senha por código (sem e-mail, SMTP ou serviço externo):
+  - Login → "Esqueci minha senha": o funcionário informa usuário, código, nova senha e confirmação; ou envia um pedido ao administrador.
+  - Administração → Recuperação de senha (MASTERS e RONAN): localizar por nome ou usuário, gerar código (XXXX-XXXX, exibido uma única vez), ver pedidos, códigos e situação (pendente, utilizado, expirado, revogado), revogar e gerar outro.
+  - Segurança: geração e validação só na função de servidor `usuarios`; banco guarda só o hash (HMAC-SHA256 com chave do servidor); validade de 2 horas; uso único; um código pendente por usuário; revogado após 5 tentativas erradas; limite global de 30 falhas por hora. A recuperação troca só a senha.
+  - Auditoria: código gerado, usado, revogado e cada falha (`audit_log`), com funcionário, administrador, datas e situação em `recovery_codes`.
 - Editar e excluir:
   - Viagens e abastecimentos têm ações separadas de Editar e Excluir. O funcionário mexe só nos próprios registros; o administrador mexe em qualquer um e precisa justificar a exclusão de registro de outra pessoa.
   - Exclusão é lógica: o registro sai das telas, da última km e dos indicadores, mas fica no banco com quem excluiu, quando e por quê; a auditoria grava os dados anteriores (ação EXCLUSAO). Não há exclusão física de viagens e abastecimentos.
@@ -44,7 +48,7 @@ Bibliotecas por CDN: Chart.js 4.4.1, SheetJS 0.18.5, JSZip 3.10.1 e supabase-js 
 - Um veículo só pode estar com uma pessoa por vez; cada pessoa só com um veículo.
 - Funcionário só registra viagem/abastecimento com o veículo assumido; só libera o próprio veículo.
 - Liberação administrativa exige confirmação e justificativa, e fica na auditoria.
-- Última km = maior km de chegada entre as viagens de todos os usuários do veículo; nunca retrocede. Viagem nova não pode começar abaixo dela. Lacunas e retrocessos aparecem em "Precisa de atenção" sem alterar os registros originais.
+- Última km = maior km de chegada entre as viagens de todos os usuários do veículo; nunca retrocede. Viagem nova não pode começar abaixo dela. Lacunas e retrocessos aparecem em "Pontos de atenção" (Visão geral), na coluna "Conflitos de km" do ciclo e no Registro, sem alterar os registros originais.
 - Idempotência: cada formulário tem um ID único (clique repetido, recarga ou reenvio não duplicam). Abastecimento com mesmo veículo, data, hora e valor é recusado.
 - Importação (menu Administração → Importação, só MASTERS) no **mesmo layout do sistema anterior**: CSV do "Exportar CSV" (`;`, seções de viagens e abastecimentos) e planilha "Controle de Utilização Veículo" (viagens a partir da linha 4; abastecimentos na coluna ABASTECIMENTO como `dd/mm/aaaa — hh:mm — N litros — R$ V.`; vários arquivos "parteN" de uma vez).
   - Escolha: viagens e abastecimentos, só viagens ou só abastecimentos.
@@ -57,5 +61,6 @@ Bibliotecas por CDN: Chart.js 4.4.1, SheetJS 0.18.5, JSZip 3.10.1 e supabase-js 
 ## Pendências
 
 1. Importação histórica real: aguardando os arquivos originais (todas as partes por veículo e/ou CSV exportado do sistema anterior). Só é gravada após conferência da prévia.
-2. Configurar o envio de e-mail (Brevo gratuito: segredos BREVO_API_KEY e EMAIL_REMETENTE na função) e cadastrar o e-mail de recuperação de cada usuário.
-3. Homologação; a troca do sistema antigo só com aprovação.
+2. Consumo médio real: exige registrar se o abastecimento completou o tanque (campo novo, a decidir).
+3. Reserva de veículos: não existe; o indicador mostra 0.
+4. Homologação; a troca do sistema antigo só com aprovação.
