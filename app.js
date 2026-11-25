@@ -226,7 +226,7 @@ const DB = {
 
 /* ───────────── Estado e sessão ───────────── */
 const S = { user: null, route: 'painel', charts: [], regFilter: '', relTab: 'viagens', rel: { ini: isoDay(addDays(new Date(), -29)), fim: today(), vid: '', uid: '' }, importPreview: null, cadTab: 'veiculos' };
-const APP_VERSAO = '20261125-1640';
+const APP_VERSAO = '20261125-1700';
 const isAdmin = () => S.user?.papel === 'admin';
 const podeOperar = () => !!S.user && (S.user.papel !== 'admin' || !!S.user.opera_veiculos); // funcionário ou administrador que também opera (RONAN)
 const operador = u => u && u.ativo !== false && !u.excluido_em && (u.papel !== 'admin' || u.opera_veiculos); // pode ser responsável/autorizado
@@ -366,7 +366,7 @@ function renderShell() {
       <div class="grp">Operação</div>${main.map(navItem).join('')}
       ${isAdmin() ? `<div class="grp">Administração</div>${adm.map(navItem).join('')}` : ''}
       <div class="foot">
-        <div class="ver muted">Versão 20261125-1640</div>
+        <div class="ver muted">Versão 20261125-1700</div>
         <div class="me"><span class="avatar">${esc(S.user.nome.split(' ').map(p => p[0]).slice(0, 2).join(''))}</span><span class="who"><b>${esc(S.user.nome)}</b><span>${isAdmin() ? (podeOperar() ? 'Administrador e operacional' : 'Administrador') : 'Funcionário'} · ${esc(S.user.usuario)}</span></span></div>
         ${window.CLOUD ? `<button class="lnk" id="mypass" title="Alterar minha senha">${ico('key')}<span class="lbl">Alterar minha senha</span></button>` : ''}
         <button class="lnk" id="collapse" title="Recolher menu">${ico('panel')}<span class="lbl">Recolher menu</span></button>
@@ -706,7 +706,7 @@ function fuelDialog(a) {
     <label class="fld">KM do veículo<input id="e-km" type="number" min="0" inputmode="numeric" value="${a.km ?? ''}"></label>
     <label class="fld">Posto<input id="e-posto" value="${esc(a.posto || '')}"></label>
     <label class="fld">Combustível<select id="e-comb">${['Gasolina', 'Etanol', 'Diesel', 'GNV', 'Outro'].map(c => `<option ${c === a.combustivel ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
-    <label class="fld">Modalidade<select id="e-mod">${Object.entries(MOD).map(([k, l]) => `<option value="${k}" ${k === a.modalidade ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    <label class="fld">Houve requisição da Masters?<select id="e-mod">${Object.entries(MODQ).map(([k, l]) => `<option value="${k}" ${k === a.modalidade ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <label class="fld">Valor total (R$)<input id="e-tot" inputmode="decimal" value="${nf(a.total, 2)}"></label>
     <label class="fld">Preço por litro (R$/L)<input id="e-prec" inputmode="decimal" value="${nf(a.preco_litro, 3)}"></label>
     <label class="fld">Completou o tanque?<select id="e-tq"><option value="" ${a.tanque_cheio == null ? 'selected' : ''}>Não informado</option><option value="1" ${a.tanque_cheio === true ? 'selected' : ''}>Sim, tanque cheio</option><option value="0" ${a.tanque_cheio === false ? 'selected' : ''}>Não, parcial</option></select></label>
@@ -762,6 +762,7 @@ function vehicleDialog(v) {
 /* ───────────── 4. Abastecimento ───────────── */
 const POSTO_PADRAO = 'Posto Atem - Posto Distrito II'; // padrão definido pelo usuário (editável no formulário)
 const MOD = { avulso: 'Avulso / vinculado a viagem', req: 'Requisição Masters', func: 'Pago pelo funcionário' };
+const MODQ = { req: 'Sim, requisição da Masters', func: 'Não, pago pelo funcionário', avulso: 'Não, avulso / vinculado a viagem' }; // opções da pergunta "Houve requisição da Masters?" (mesmos valores gravados)
 function rAbastecimento() {
   const mine = DB.myUse(), V = DB.vehicles();
   let top = '';
@@ -777,7 +778,7 @@ function rAbastecimento() {
       <label class="fld">KM do veículo<input id="a-km" type="number" min="0" inputmode="numeric" value="${lk.km ?? ''}"><span class="hint muted">Sugerida pela última km válida</span></label>
       <label class="fld">Posto<input id="a-posto" list="postos" placeholder="Selecione ou digite" value="${esc(POSTO_PADRAO)}"><datalist id="postos">${postos.map(p => `<option value="${esc(p)}">`).join('')}</datalist></label>
       <label class="fld">Combustível<select id="a-comb">${['Gasolina', 'Etanol', 'Diesel', 'GNV', 'Outro'].map(c => `<option ${c === (DB.veh(vid).modelo || '').match(/Diesel/i)?.[0] ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
-      <label class="fld">Modalidade<select id="a-mod">${Object.entries(MOD).map(([k, l]) => `<option value="${k}" ${k === 'req' ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="fld">Houve requisição da Masters?<select id="a-mod">${Object.entries(MODQ).map(([k, l]) => `<option value="${k}" ${k === 'req' ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label class="fld">Valor total pago (R$)<input id="a-tot" inputmode="decimal" placeholder="300,00"></label>
       <label class="fld">Preço por litro (R$/L)<input id="a-prec" inputmode="decimal" placeholder="6,19"></label>
       <label class="fld">Litros (calculado)<input id="a-lit" readonly tabindex="-1"></label>
