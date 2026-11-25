@@ -175,6 +175,19 @@ dialog .dh{padding:18px 18px 0}.dialog-body{padding:14px 18px;display:grid;gap:1
 #toast{position:fixed;right:max(16px,env(safe-area-inset-right,0px));bottom:calc(16px + env(safe-area-inset-bottom,0px));display:grid;gap:8px;z-index:60}
 .toast{background:var(--graphite);color:#fff;padding:10px 14px;border-radius:10px;box-shadow:var(--shadow);animation:in .2s;max-width:340px}
 
+/* resumo da operação e recuperação de acesso */
+.resumo{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.ri{display:flex;gap:12px;align-items:flex-start;padding:12px;border:1px solid var(--line);border-radius:12px;min-width:0}
+.ri>div{display:grid;gap:2px;min-width:0}.ri .k{font-size:12px;color:var(--muted);font-weight:600}.ri .v{font-family:var(--f-display);font-size:22px;line-height:1.15;overflow-wrap:anywhere}.ri .s{font-size:12px;color:var(--muted)}
+.ri-i{flex:none;display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:color-mix(in srgb,var(--tone) 14%,transparent);color:var(--tone)}
+@media (max-width:420px){.resumo{grid-template-columns:1fr}}
+.lnk-rec{background:none;border:0;padding:4px 0;color:var(--accent);font:inherit;font-size:13px;font-weight:600;cursor:pointer;text-align:left;justify-self:start}
+.lnk-rec:hover{text-decoration:underline}
+fieldset.rec{border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:grid;gap:10px;margin:0}
+fieldset.rec legend{font-weight:700;padding:0 6px}
+
+.btn.danger-t{color:var(--crit)}
+
 /* celular */
 .bottom{display:none}
 .scrim{display:none}

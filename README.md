@@ -21,7 +21,8 @@ Sistema novo e independente. Não usa o código, o Firebase nem a publicação d
 | `assets/` | Logotipo original da Masters e ícones |
 | `cloud.js`, `config.js` | Conexão com o Supabase (somente chave pública) |
 | `manifest.webmanifest`, `sw.js` | Instalação na tela inicial; o service worker nunca guarda dados do banco |
-| `supabase/migrations/` | 001 esquema/RLS/auditoria/última km; 002 permissões de gatilhos; 003 primeiro acesso; 004 importação só pelo administrador |
+| `supabase/migrations/` | 001 esquema/RLS/auditoria/última km; 002 permissões de gatilhos; 003 primeiro acesso; 004 importação só pelo administrador; 005 recuperação de acesso; 006 edição e exclusão lógica |
+| `supabase/manual/005b_ronan_admin.sql` | Trecho rodado manualmente no SQL Editor (vários administradores; RONAN administrador) |
 | `supabase/functions/usuarios` | Criação de usuários e redefinição de senha (chave secreta só no servidor) |
 | `supabase/teste_regras.sql` | Teste das regras (executado em Postgres local: todas passaram) |
 
@@ -29,7 +30,17 @@ Bibliotecas por CDN: Chart.js 4.4.1, SheetJS 0.18.5, JSZip 3.10.1 e supabase-js 
 
 ## Regras implementadas
 
-- MASTERS é o único administrador e nunca assume, reserva ou é responsável por veículo (tela e banco).
+- Administradores: MASTERS e RONAN. Administrador nunca assume, reserva ou é responsável por veículo (tela e banco). O banco impede remover o último administrador ativo.
+- Visão geral: "Resumo da Operação" do mês (veículos em uso agora, abastecimentos, km sem repetição e veículo mais utilizado), calculado dos dados já carregados, sem consulta extra.
+- Recuperação de acesso:
+  - Na tela de login, "Esqueci minha senha ou preciso recuperar meu acesso".
+  - Link por e-mail: usa o token de recuperação do Supabase Auth (uso único, 1 hora), enviado pela função `usuarios` ao e-mail de recuperação cadastrado. A resposta é sempre a mesma, sem revelar se o e-mail existe.
+  - Ajuda administrativa: o pedido vai para Administração → Recuperação de acesso. O administrador confirma a identidade e gera uma senha temporária (troca obrigatória no próximo acesso) ou envia o link. Tudo fica na auditoria.
+  - O e-mail de recuperação fica em `profile_private` (visível só para administradores e para o próprio usuário).
+- Editar e excluir:
+  - Viagens e abastecimentos têm ações separadas de Editar e Excluir. O funcionário mexe só nos próprios registros; o administrador mexe em qualquer um e precisa justificar a exclusão de registro de outra pessoa.
+  - Exclusão é lógica: o registro sai das telas, da última km e dos indicadores, mas fica no banco com quem excluiu, quando e por quê; a auditoria grava os dados anteriores (ação EXCLUSAO). Não há exclusão física de viagens e abastecimentos.
+  - Veículo e usuário excluídos são arquivados com justificativa. O histórico é preservado e o usuário excluído tem o acesso bloqueado. Não exclui veículo em uso, usuário com veículo, o próprio acesso nem o último administrador.
 - Um veículo só pode estar com uma pessoa por vez; cada pessoa só com um veículo.
 - Funcionário só registra viagem/abastecimento com o veículo assumido; só libera o próprio veículo.
 - Liberação administrativa exige confirmação e justificativa, e fica na auditoria.
@@ -46,5 +57,5 @@ Bibliotecas por CDN: Chart.js 4.4.1, SheetJS 0.18.5, JSZip 3.10.1 e supabase-js 
 ## Pendências
 
 1. Importação histórica real: aguardando os arquivos originais (todas as partes por veículo e/ou CSV exportado do sistema anterior). Só é gravada após conferência da prévia.
-2. Edição de registros próprios e correção administrativa com auditoria.
+2. Configurar o envio de e-mail (Brevo gratuito: segredos BREVO_API_KEY e EMAIL_REMETENTE na função) e cadastrar o e-mail de recuperação de cada usuário.
 3. Homologação; a troca do sistema antigo só com aprovação.

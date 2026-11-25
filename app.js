@@ -106,9 +106,46 @@ const DB = {
   activeUse(vid) { return this.d.usage.find(u => u.vehicle_id === vid && u.status === 'ativa'); },
   myUse() { return this.d.usage.find(u => u.user_id === S.user?.id && u.status === 'ativa'); },
   canSee(v) { return isAdmin() || v.responsavel === S.user.id || (v.autorizados || []).includes(S.user.id); },
-  vehicles() { return this.d.vehicles.filter(v => this.canSee(v)); },
-  trips() { const ids = new Set(this.vehicles().map(v => v.id)); return this.d.trips.filter(t => ids.has(t.vehicle_id)); },
-  fuelings() { const ids = new Set(this.vehicles().map(v => v.id)); return this.d.fuelings.filter(t => ids.has(t.vehicle_id)); },
+  vehicles() { return this.d.vehicles.filter(v => !v.excluido_em && this.canSee(v)); },
+  vativos() { return this.d.vehicles.filter(v => !v.excluido_em); },
+  trips() { const ids = new Set(this.d.vehicles.filter(v => this.canSee(v)).map(v => v.id)); return this.d.trips.filter(t => ids.has(t.vehicle_id)); }, // inclui histórico de veículo excluído
+  fuelings() { const ids = new Set(this.d.vehicles.filter(v => this.canSee(v)).map(v => v.id)); return this.d.fuelings.filter(t => ids.has(t.vehicle_id)); },
+  canEdit(r) { return isAdmin() || r.user_id === S.user?.id; },
+  arquivar(lista, id, motivo, entidade, rotulo) { // exclusão lógica: o registro sai das telas e indicadores, mas fica guardado com quem, quando e por quê
+    const i = this.d[lista].findIndex(x => x.id === id), r = this.d[lista][i];
+    if (!r || !this.canEdit(r)) throw Error('Você só pode excluir os seus próprios registros.');
+    if (r.user_id !== S.user.id && !String(motivo || '').trim()) throw Error('Informe a justificativa para excluir registro de outra pessoa.');
+    this.d[lista].splice(i, 1); (this.d.lixeira ||= []).push({ lista, ...r, excluido_em: new Date().toISOString(), excluido_por: S.user.id, motivo_exclusao: motivo || '' });
+    this.audit('EXCLUSAO', entidade, id, `${rotulo}. Dados anteriores: ${JSON.stringify(r)}${motivo ? `. Justificativa: ${motivo}` : ''}`); this.save();
+  },
+  editTrip(id, p) {
+    const t = this.d.trips.find(x => x.id === id); if (!t || !this.canEdit(t)) throw Error('Você só pode editar os seus próprios registros.');
+    const antes = JSON.stringify(t); Object.assign(t, p); this.audit('EDITAR_VIAGEM', 'viagem', id, `Antes: ${antes}`); this.save();
+  },
+  editFuel(id, p) {
+    const a = this.d.fuelings.find(x => x.id === id); if (!a || !this.canEdit(a)) throw Error('Você só pode editar os seus próprios registros.');
+    const antes = JSON.stringify(a); Object.assign(a, p); this.audit('EDITAR_ABASTECIMENTO', 'abastecimento', id, `Antes: ${antes}`); this.save();
+  },
+  delTrip(id, motivo) { const t = this.d.trips.find(x => x.id === id); this.arquivar('trips', id, motivo, 'viagem', `Viagem ${t ? fd(t.data) + ' ' + t.origem_destino : id} excluída`); },
+  delFuel(id, motivo) { const a = this.d.fuelings.find(x => x.id === id); this.arquivar('fuelings', id, motivo, 'abastecimento', `Abastecimento ${a ? fd(a.data) + ' ' + brl(a.total) : id} excluído`); },
+  delVehicle(id, motivo) {
+    if (!isAdmin()) throw Error('Somente administradores excluem veículos.');
+    if (!String(motivo || '').trim()) throw Error('Informe a justificativa para excluir o veículo.');
+    if (this.activeUse(id)) throw Error('Libere o veículo antes de excluí-lo.');
+    const v = this.veh(id); Object.assign(v, { excluido_em: new Date().toISOString(), excluido_por: S.user.id, motivo_exclusao: motivo, ativo: false, responsavel: null, autorizados: [] });
+    this.audit('EXCLUSAO', 'veiculo', id, `${v.nome} (${v.placa}) excluído; viagens e abastecimentos preservados. Justificativa: ${motivo}`); this.save();
+  },
+  delUser(id, motivo) {
+    if (!isAdmin()) throw Error('Acesso restrito ao administrador.');
+    const u = this.user(id); if (!u) throw Error('Usuário não encontrado.');
+    if (id === S.user.id) throw Error('Você não pode excluir o seu próprio acesso.');
+    if (!String(motivo || '').trim()) throw Error('Informe a justificativa para excluir o usuário.');
+    if (u.papel === 'admin' && !this.d.users.some(x => x.id !== id && x.papel === 'admin' && x.ativo && !x.excluido_em)) throw Error('Não é possível remover o último administrador ativo.');
+    if (this.d.usage.some(x => x.user_id === id && x.status === 'ativa')) throw Error('Este usuário está com um veículo. Libere o veículo antes de excluí-lo.');
+    Object.assign(u, { ativo: false, excluido_em: new Date().toISOString(), motivo_exclusao: motivo });
+    this.d.vehicles.forEach(v => { if (v.responsavel === id) v.responsavel = null; v.autorizados = (v.autorizados || []).filter(x => x !== id); });
+    this.audit('EXCLUSAO', 'usuario', id, `${u.nome} (${u.usuario}) excluído; registros preservados. Justificativa: ${motivo}`); this.save();
+  },
 
   /* Última km válida: maior km de chegada de TODAS as viagens do veículo (qualquer usuário). Nunca retrocede. */
   lastKm(vid) {
@@ -125,7 +162,7 @@ const DB = {
   },
 
   assumir(vid) {
-    if (isAdmin()) throw Error('A conta MASTERS é administrativa e não assume veículos.');
+    if (isAdmin()) throw Error('Conta de administrador não assume veículos.');
     const v = this.veh(vid); if (!v || !this.canSee(v)) throw Error('Você não está autorizado a usar este veículo.');
     if (this.activeUse(vid)) throw Error('Este veículo já está em uso por outra pessoa.');
     if (this.myUse()) throw Error('Você já está com um veículo. Libere-o antes de assumir outro.');
@@ -203,6 +240,7 @@ const ROUTES = [
   { id: 'liberacoes', label: 'Liberações', sub: 'Administração', icon: 'key', render: rLiberacoes, admin: true },
   { id: 'alocacao', label: 'Alocação de veículos', sub: 'Administração', icon: 'shuffle', render: rAlocacao, admin: true },
   { id: 'importacao', label: 'Importação', sub: 'Layout do sistema anterior', icon: 'upload', render: rImportacao, admin: true },
+  { id: 'acessos', label: 'Recuperação de acesso', sub: 'Pedidos de ajuda', icon: 'key', render: rAcessos, admin: true },
   { id: 'auditoria', label: 'Auditoria', sub: 'Histórico de operações', icon: 'shield', render: rAuditoria, admin: true },
 ];
 
@@ -230,11 +268,14 @@ function renderLogin() {
         <label class="fld">Senha<input id="l-pass" type="password" autocomplete="current-password" placeholder="${window.CLOUD ? 'Sua senha' : 'demo'}"></label>
         <div id="l-err"></div>
         <button class="btn" style="justify-content:center">Entrar</button>
+        <button type="button" class="lnk-rec" id="l-rec">Esqueci minha senha ou preciso recuperar meu acesso</button>
         ${window.CLOUD ? '' : '<p class="muted" style="font-size:12px;margin:0">Na versão oficial, o acesso será pelo Supabase Auth, com sessão persistente entre aberturas do aplicativo.</p>'}
       </form>
     </section>
   </div>`;
   $$('.demo-users button').forEach(b => b.onclick = () => { $('#l-user').value = b.dataset.u; $('#l-pass').value = 'demo'; $('#l-pass').focus(); });
+  $('#l-rec').onclick = () => window.CLOUD ? telaRecuperar() : ($('#l-err').innerHTML = '<div class="msg info">A recuperação de acesso funciona somente no sistema oficial. Na demonstração, a senha de todos os perfis é "demo".</div>');
+  if (S.loginMsg) { $('#l-err').innerHTML = `<div class="msg ok">${esc(S.loginMsg)}</div>`; S.loginMsg = null; }
   if (window.CLOUD) CLOUD.temAdmin().then(tem => { if (!tem) primeiroAcesso(); });
   $('#lf').onsubmit = async e => {
     e.preventDefault();
@@ -245,6 +286,51 @@ function renderLogin() {
     location.hash = 'painel'; renderShell();
   };
   drawRoutes();
+}
+function telaRecuperar() {
+  $('#lf').innerHTML = `<div><h2 style="font-size:22px">Recuperar acesso</h2><p class="muted" style="margin:4px 0 0">Escolha uma das opções abaixo.</p></div>
+    <fieldset class="rec"><legend>1. Receber link por e-mail</legend>
+      <p class="muted" style="margin:0;font-size:13px">Use o e-mail de recuperação cadastrado pelo administrador na sua conta.</p>
+      <label class="fld">E-mail<input id="r-email" type="email" autocomplete="email" inputmode="email"></label>
+      <div id="r-msg1"></div><button type="button" class="btn" id="r-env" style="justify-content:center">Enviar link de recuperação</button></fieldset>
+    <fieldset class="rec"><legend>2. Não tenho mais acesso ao e-mail</legend>
+      <p class="muted" style="margin:0;font-size:13px">O administrador vai confirmar sua identidade antes de liberar o acesso. Nenhuma senha é enviada por aqui.</p>
+      <label class="fld">Usuário<input id="h-us" autocapitalize="characters" autocomplete="username" placeholder="Ex.: ECCLESTON"></label>
+      <label class="fld">Nome completo<input id="h-nm" autocomplete="name"></label>
+      <label class="fld">Telefone ou contato para retorno<input id="h-ct" autocomplete="tel" inputmode="tel"></label>
+      <label class="fld">Mensagem (opcional)<textarea id="h-mg" rows="2" maxlength="600"></textarea></label>
+      <div id="r-msg2"></div><button type="button" class="btn sec" id="h-env" style="justify-content:center">Pedir ajuda ao administrador</button></fieldset>
+    <button type="button" class="lnk-rec" id="r-volta">← Voltar para entrar</button>`;
+  $('#lf').onsubmit = e => e.preventDefault();
+  $('#r-volta').onclick = renderLogin;
+  const envia = async (bt, box, fn) => { bt.disabled = true; try { const r = await fn(); box.innerHTML = `<div class="msg ok">${esc(r.mensagem)}</div>`; } catch (x) { bt.disabled = false; box.innerHTML = `<div class="msg err">${esc(x.message)}</div>`; } };
+  $('#r-env').onclick = () => envia($('#r-env'), $('#r-msg1'), () => CLOUD.recuperarEmail($('#r-email').value));
+  $('#h-env').onclick = () => envia($('#h-env'), $('#r-msg2'), () => CLOUD.pedirAjuda({ usuario: $('#h-us').value, nome: $('#h-nm').value, contato: $('#h-ct').value, mensagem: $('#h-mg').value }));
+}
+function telaNovaSenha(th) {
+  $('#lf').innerHTML = `<div><h2 style="font-size:22px">Criar nova senha</h2><p class="muted" style="margin:4px 0 0">Link de recuperação recebido por e-mail. Ele vale por 1 hora e só pode ser usado uma vez.</p></div>
+    <label class="fld">Nova senha<input id="n-s1" type="password" autocomplete="new-password"></label>
+    <label class="fld">Confirme a nova senha<input id="n-s2" type="password" autocomplete="new-password"></label>
+    <div id="l-err"></div><button class="btn" style="justify-content:center">Salvar nova senha</button>
+    <button type="button" class="lnk-rec" id="r-volta">← Voltar para entrar</button>`;
+  $('#r-volta').onclick = renderLogin;
+  $('#lf').onsubmit = async e => {
+    e.preventDefault(); const bt = $('#lf button.btn');
+    if ($('#n-s1').value.length < 6) { $('#l-err').innerHTML = '<div class="msg err">A senha precisa ter pelo menos 6 caracteres.</div>'; return; }
+    if ($('#n-s1').value !== $('#n-s2').value) { $('#l-err').innerHTML = '<div class="msg err">As senhas não conferem.</div>'; return; }
+    bt.disabled = true;
+    try { await CLOUD.novaSenhaPeloLink(th, $('#n-s1').value); S.loginMsg = 'Senha alterada. Entre com o seu usuário e a nova senha.'; renderLogin(); }
+    catch (x) { bt.disabled = false; $('#l-err').innerHTML = `<div class="msg err">${esc(x.message)}</div>`; }
+  };
+}
+function trocaObrigatoria() {
+  dialog(`<form id="to"><div class="dh"><h2>Crie uma nova senha</h2></div><div class="dialog-body">
+    <p style="margin:0">Você entrou com uma senha temporária. Para continuar, crie a sua senha pessoal.</p>
+    <label class="fld">Nova senha<input id="to1" type="password" autocomplete="new-password"></label><label class="fld">Repita a senha<input id="to2" type="password" autocomplete="new-password"></label><div id="to-err"></div></div>
+    <div class="dialog-foot"><button class="btn">Salvar e continuar</button></div></form>`, d => {
+    d.oncancel = e => e.preventDefault();
+    $('#to', d).onsubmit = async e => { e.preventDefault(); if ($('#to1').value !== $('#to2').value) { $('#to-err').innerHTML = '<div class="msg err">As senhas não conferem.</div>'; return; } try { await CLOUD.minhaSenha($('#to1').value); d.oncancel = null; closeDlg(); toast('Senha criada.'); } catch (x) { $('#to-err').innerHTML = `<div class="msg err">${esc(x.message)}</div>`; } };
+  });
 }
 function primeiroAcesso() {
   $('#lf').innerHTML = `<div><h2 style="font-size:22px">Primeiro acesso</h2><p class="muted" style="margin:4px 0 0">Defina a senha do administrador <b>MASTERS</b>. Use o código de configuração informado na implantação. Esta tela só aparece enquanto o administrador não existir.</p></div>
@@ -315,6 +401,7 @@ function renderShell() {
   $('#logout').onclick = async () => { DB.audit('LOGOUT', 'usuario', S.user.id, `${S.user.nome} saiu.`); DB.save(); if (window.CLOUD) await CLOUD.logout().catch(() => { }); S.user = null; store.del(SESSION_KEY); renderLogin(); };
   $('#reset').onclick = () => dialog(`<div class="dh"><h2>Restaurar base de demonstração?</h2></div><div class="dialog-body"><p>Todos os registros feitos nesta demonstração, neste navegador, serão substituídos pela base fictícia original. O sistema oficial não é afetado.</p></div><div class="dialog-foot"><button class="btn sec" id="c">Cancelar</button><button class="btn danger" id="o">Restaurar</button></div>`, d => { $('#c', d).onclick = closeDlg; $('#o', d).onclick = () => { DB.reset(); const u = DB.d.users.find(x => x.usuario === S.user.usuario); S.user = u; store.set(SESSION_KEY, u.id); closeDlg(); route(); toast('Base de demonstração restaurada.'); }; });
   route();
+  if (S.user.trocar_senha) trocaObrigatoria();
 }
 function route() {
   if (!S.user) return renderLogin();
@@ -390,13 +477,23 @@ function attention() {
   }
   return out;
 }
+function resumoOperacao() { // somente dados registrados (no modo oficial, os do Supabase já carregados; nenhuma consulta extra)
+  const ini = today().slice(0, 8) + '01', fim = today(), V = DB.vehicles();
+  const emAndamento = V.map(v => ({ v, u: DB.activeUse(v.id) })).filter(x => x.u);
+  const vistos = new Set(), T = DB.trips().filter(t => { if (t.data < ini || t.data > fim || !(t.km_chegada >= t.km_saida)) return false; const k = t.chave_import || chaveViagem(t, DB.veh(t.vehicle_id)?.placa); if (vistos.has(k)) return false; vistos.add(k); return true; });
+  const A = DB.fuelings().filter(a => a.data >= ini && a.data <= fim);
+  const kmV = new Map(); T.forEach(t => kmV.set(t.vehicle_id, (kmV.get(t.vehicle_id) || 0) + (t.km_chegada - t.km_saida)));
+  const km = [...kmV.values()].reduce((s, x) => s + x, 0), top = [...kmV.entries()].sort((a, b) => b[1] - a[1])[0];
+  return { ini, fim, emAndamento, T, A, km, top: top && top[1] > 0 ? { v: DB.veh(top[0]), km: top[1] } : null, totA: A.reduce((s, a) => s + a.total, 0) };
+}
 function rPainel() {
   const V = DB.vehicles(), ini = isoDay(addDays(new Date(), -29)), fim = today(), P = periodStats(ini, fim);
-  const emUso = V.filter(v => DB.activeUse(v.id)).length, att = attention();
+  const emUso = V.filter(v => DB.activeUse(v.id)).length, att = attention(), R = resumoOperacao(), mes = new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
   const recent = [...P.T.map(t => ({ k: 'v', at: t.data + (t.hora_saida || ''), t })), ...P.A.map(a => ({ k: 'a', at: a.data + a.hora, a }))].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 7);
   const mine = DB.myUse();
   afterRender.painel = () => {
     bindVehActions();
+    $('#k-att')?.addEventListener('click', () => dialog(`<div class="dh"><h2>Situações a verificar</h2></div><div class="dialog-body"><div class="list">${att.map(a => `<div class="li">${ico('alert')}<div class="t"><b style="color:var(--${a.lvl})">${esc(a.t)}</b><div class="muted" style="font-size:13px">${esc(a.d)}</div></div></div>`).join('') || '<div class="empty">Nenhuma situação pendente.</div>'}</div></div><div class="dialog-foot"><button class="btn" id="c">Fechar</button></div>`, d => { $('#c', d).onclick = closeDlg; }));
     const days = [...Array(30)].map((_, i) => isoDay(addDays(new Date(), i - 29)));
     mkChart('c-km', { type: 'bar', data: { labels: days.map(d => fd(d).slice(0, 5)), datasets: V.map((v, i) => ({ label: v.nome, backgroundColor: VCOL[i % VCOL.length], borderRadius: 3, data: days.map(d => P.T.filter(t => t.data === d && t.vehicle_id === v.id).reduce((s, t) => s + t.km_chegada - t.km_saida, 0)) })) }, options: { maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, usePointStyle: true } }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${nf(c.raw)} km` } } }, scales: { x: { stacked: true, grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 12 } }, y: { stacked: true, ticks: { callback: v => nf(v) } } } } });
     mkChart('c-fuel', { type: 'doughnut', data: { labels: V.map(v => v.nome), datasets: [{ data: V.map(v => P.A.filter(a => a.vehicle_id === v.id).reduce((s, a) => s + a.total, 0)), backgroundColor: V.map((_, i) => VCOL[i % VCOL.length]), borderColor: css('--surface'), borderWidth: 3 }] }, options: { maintainAspectRatio: false, cutout: '68%', plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, usePointStyle: true } }, tooltip: { callbacks: { label: c => `${c.label}: ${brl(c.raw)}` } } } } });
@@ -411,7 +508,7 @@ function rPainel() {
     <div class="kpi" style="--tone:var(--cyan)"><span class="k">Km percorridos</span><span class="v">${nf(P.km)}</span><span class="s">últimos 30 dias</span></div>
     <div class="kpi" style="--tone:var(--warn)"><span class="k">${ico('fuel')}Combustível</span><span class="v">${brl0(P.tot)}</span><span class="s">${P.A.length} abastecimentos · ${nf(P.lit, 0)} L</span></div>
     <div class="kpi" style="--tone:var(--graphite)"><span class="k">Consumo médio</span><span class="v">${P.kml ? nf(P.kml, 1) : '—'}<small style="font-size:14px"> km/L</small></span><span class="s">estimado: km ÷ litros</span></div>
-    <div class="kpi" style="--tone:${att.length ? 'var(--crit)' : 'var(--ok)'}"><span class="k">${ico('alert')}Atenção</span><span class="v">${att.length}</span><span class="s">${att.length ? 'situações a verificar' : 'nada pendente'}</span></div>
+    <div class="kpi" id="k-att" role="button" tabindex="0" title="Ver detalhes" style="cursor:pointer;--tone:${att.length ? 'var(--crit)' : 'var(--ok)'}"><span class="k">${ico('alert')}Atenção</span><span class="v">${att.length}</span><span class="s">${att.length ? 'situações a verificar' : 'nada pendente'}</span></div>
   </section>
   <section class="card"><header><h2>Frota agora</h2><span class="grow"></span><span class="muted" style="font-size:12px">Última km calculada a partir das viagens de todos os usuários</span></header>
     <div class="fleet">${V.map(v => vehCard(v)).join('') || '<div class="empty">Nenhum veículo autorizado.</div>'}</div></section>
@@ -420,8 +517,14 @@ function rPainel() {
     <section class="card"><header><h2>Gasto com combustível</h2><span class="grow"></span><span class="muted" style="font-size:12px">30 dias</span></header><div class="chart-box"><canvas id="c-fuel" aria-label="Gráfico de gasto por veículo"></canvas></div></section>
   </div>
   <div class="grid g2">
-    <section class="card"><header><h2>Precisa de atenção</h2><span class="grow"></span><span class="pill ${att.length ? 'p-warn' : 'p-ok'}">${att.length || 'Nada pendente'}</span></header>
-      <div class="list">${att.map(a => `<div class="li">${ico('alert')}<div class="t"><b style="color:var(--${a.lvl})">${esc(a.t)}</b><div class="muted" style="font-size:13px">${esc(a.d)}</div></div></div>`).join('') || '<div class="empty">Nenhuma situação pendente.</div>'}</div></section>
+    <section class="card"><header><h2>Resumo da Operação</h2><span class="grow"></span><span class="muted" style="font-size:12px">${esc(mes)}</span></header>
+      ${R.emAndamento.length || R.T.length || R.A.length ? `<div class="resumo">
+        <div class="ri"><span class="ri-i" style="--tone:var(--electric)">${ico('route')}</span><div><span class="k">Viagens em andamento</span><b class="v">${R.emAndamento.length}</b><span class="s">${R.emAndamento.length ? R.emAndamento.map(x => `${esc(x.v.nome)} · ${esc(DB.user(x.u.user_id)?.nome || '')}`).join('<br>') : 'nenhum veículo assumido agora'}</span></div></div>
+        <div class="ri"><span class="ri-i" style="--tone:var(--warn)">${ico('fuel')}</span><div><span class="k">Abastecimentos no mês</span><b class="v">${R.A.length}</b><span class="s">${R.A.length ? brl(R.totA) : 'nenhum registrado'}</span></div></div>
+        <div class="ri"><span class="ri-i" style="--tone:var(--cyan)">${ico('gauge')}</span><div><span class="k">Quilometragem no mês</span><b class="v">${nf(R.km)} km</b><span class="s">${R.T.length} viagens válidas, sem repetição</span></div></div>
+        <div class="ri"><span class="ri-i" style="--tone:var(--ok)">${ico('car')}</span><div><span class="k">Veículo mais utilizado</span><b class="v">${R.top ? esc(R.top.v.nome) : '—'}</b><span class="s">${R.top ? `${esc(R.top.v.placa)} · ${nf(R.top.km)} km no mês` : 'sem viagens no mês'}</span></div></div>
+      </div>` : '<div class="empty">Nenhuma operação registrada neste mês.</div>'}
+      <p class="muted" style="font-size:12px;margin:10px 0 0">Período: ${fd(R.ini)} a ${fd(R.fim)}. "Em andamento" são os veículos assumidos e ainda não liberados.</p></section>
     <section class="card"><header><h2>Histórico recente</h2></header>
       <div class="list">${recent.map(r => r.k === 'v' ? `<div class="li">${ico('route')}<div class="t"><b>${esc(DB.veh(r.t.vehicle_id).nome)}</b> · ${esc(r.t.origem_destino)}<div class="muted" style="font-size:12px">${fd(r.t.data)} ${esc(r.t.hora_saida || '')} · ${esc(DB.user(r.t.user_id)?.nome || r.t.usuario_texto)} · <span class="mono">${nf(r.t.km_chegada - r.t.km_saida)} km</span></div></div></div>` : `<div class="li">${ico('fuel')}<div class="t"><b>${esc(DB.veh(r.a.vehicle_id).nome)}</b> · ${esc(r.a.posto || 'Abastecimento')}<div class="muted" style="font-size:12px">${fd(r.a.data)} ${esc(r.a.hora)} · <span class="mono">${nf(r.a.litros, 2)} L · ${brl(r.a.total)}</span></div></div></div>`).join('') || '<div class="empty">Sem movimentação no período.</div>'}</div></section>
   </div>`;
@@ -433,7 +536,7 @@ function rRegistro() {
   const vid = mine ? mine.vehicle_id : (S.regFilter || V[0]?.id);
   const v = DB.veh(vid);
   let top = '';
-  if (isAdmin()) top = `<div class="msg info">${ico('shield')}<span>A conta MASTERS consulta os registros, mas não assume veículos nem registra viagens. Selecione um veículo para ver o histórico.</span></div>`;
+  if (isAdmin()) top = `<div class="msg info">${ico('shield')}<span>Administradores consultam e corrigem registros, mas não assumem veículos nem registram viagens. Selecione um veículo para ver o histórico.</span></div>`;
   else if (!mine) top = `<section class="card"><header><h2>Assuma um veículo para registrar</h2></header><div class="fleet">${V.map(x => vehCard(x)).join('')}</div></section>`;
   else {
     const lk = DB.lastKm(vid), fid = uid();
@@ -457,7 +560,7 @@ function rRegistro() {
   }
   const T = DB.ordered(vid).reverse(), inc = new Set(DB.inconsistencies(vid).map(i => i.trip.id));
   afterRender.registro = () => {
-    bindVehActions();
+    bindVehActions(); bindEdicao();
     $('#reg-v')?.addEventListener('change', e => { S.regFilter = e.target.value; route(); });
     const f = $('#tf'); if (!f) return;
     const upd = () => { const s = +$('#t-kms').value, c = +$('#t-kmc').value; $('#t-rod').textContent = $('#t-kmc').value && c >= s ? `${nf(c - s)} km rodados` : ' '; };
@@ -479,7 +582,7 @@ function rRegistro() {
       if (err) { $('#t-err').innerHTML = `<div class="msg err">${ico('alert')}${esc(err)}</div>`; return; }
       const gap = t.km_saida - lk;
       const go = async () => { btn.disabled = true; try { const r = await DB.addTrip(t); toast(r === 'repetido' ? 'Esta viagem já estava salva. Nada foi duplicado.' : 'Viagem salva. Última km atualizada.'); route(); } catch (x) { btn.disabled = false; $('#t-err').innerHTML = `<div class="msg err">${ico('alert')}${esc(x.message)}</div>`; } };
-      if (gap > 0) dialog(`<div class="dh"><h2>KM de saída acima da última registrada</h2></div><div class="dialog-body"><p>Há <b>${nf(gap)} km</b> sem registro entre a última viagem (${nf(lk)} km) e esta saída (${nf(t.km_saida)} km). A viagem será salva e a diferença aparecerá em "Precisa de atenção".</p></div><div class="dialog-foot"><button class="btn sec" id="c">Corrigir</button><button class="btn" id="o">Salvar assim mesmo</button></div>`, d => { $('#c', d).onclick = closeDlg; $('#o', d).onclick = () => { closeDlg(); go(); }; });
+      if (gap > 0) dialog(`<div class="dh"><h2>KM de saída acima da última registrada</h2></div><div class="dialog-body"><p>Há <b>${nf(gap)} km</b> sem registro entre a última viagem (${nf(lk)} km) e esta saída (${nf(t.km_saida)} km). A viagem será salva e a diferença aparecerá no indicador "Atenção" da Visão geral.</p></div><div class="dialog-foot"><button class="btn sec" id="c">Corrigir</button><button class="btn" id="o">Salvar assim mesmo</button></div>`, d => { $('#c', d).onclick = closeDlg; $('#o', d).onclick = () => { closeDlg(); go(); }; });
       else go();
     };
   };
@@ -492,26 +595,97 @@ function rRegistro() {
       { h: 'Rodado', n: 1, f: r => `<span class="mono">${nf(r.km_chegada - r.km_saida)}</span>` }, { h: 'Origem / Destino', f: r => esc(r.origem_destino) },
       { h: 'Motorista', f: r => esc(r.motorista) }, { h: 'Finalidade', f: r => esc(r.finalidade) }, { h: 'Visto', f: r => r.visto ? 'OK' : '' },
       { h: 'Situação', f: r => inc.has(r.id) ? '<span class="pill p-warn">KM divergente</span>' : r.origem === 'importacao' ? '<span class="pill p-cyan">Importada</span>' : '<span class="pill p-ok">Válida</span>' },
+      { h: '', f: r => acoes(r, 't') },
     ], T.slice(0, 40).map(r => ({ ...r, __flag: inc.has(r.id) })), 'Nenhuma viagem registrada para este veículo.')}
     ${T.length > 40 ? `<p class="muted" style="font-size:12px">Mostrando as 40 mais recentes de ${T.length}. Use Relatórios para o histórico completo.</p>` : ''}
   </section>`;
 }
 
+/* Editar e excluir (ações distintas) */
+const acoes = (r, k) => DB.canEdit(r) ? `<span style="display:inline-flex;gap:6px"><button class="btn sm sec" data-e${k}="${r.id}">Editar</button><button class="btn sm sec danger-t" data-x${k}="${r.id}">Excluir</button></span>` : '';
+function confirmaExclusao({ titulo, desc, motivo, aviso, ok }) {
+  dialog(`<form id="xf"><div class="dh"><h2>${esc(titulo)}</h2></div><div class="dialog-body">
+    <p style="margin:0">${desc}</p>${aviso ? `<div class="msg info">${esc(aviso)}</div>` : ''}
+    <label class="fld">Justificativa${motivo ? ' (obrigatória)' : ' (opcional)'}<textarea id="x-mt" rows="2" maxlength="300"></textarea></label><div id="x-err"></div></div>
+    <div class="dialog-foot"><button type="button" class="btn sec" id="c">Cancelar</button><button class="btn danger">Excluir</button></div></form>`, d => {
+    $('#c', d).onclick = closeDlg;
+    $('#xf', d).onsubmit = async e => { e.preventDefault(); const m = $('#x-mt', d).value.trim(); if (motivo && !m) { $('#x-err').innerHTML = '<div class="msg err">Informe a justificativa.</div>'; return; } try { await ok(m); closeDlg(); toast('Registro excluído. A auditoria guarda os dados anteriores.'); route(); } catch (x) { $('#x-err').innerHTML = `<div class="msg err">${esc(x.message)}</div>`; } };
+  });
+}
+const alheio = r => r.user_id !== S.user.id;
+function bindEdicao() {
+  $$('[data-et]').forEach(b => b.onclick = () => tripDialog(DB.d.trips.find(t => t.id === b.dataset.et)));
+  $$('[data-ef]').forEach(b => b.onclick = () => fuelDialog(DB.d.fuelings.find(t => t.id === b.dataset.ef)));
+  $$('[data-xt]').forEach(b => b.onclick = () => { const t = DB.d.trips.find(x => x.id === b.dataset.xt); confirmaExclusao({ titulo: 'Excluir viagem?', desc: `<b>${esc(DB.veh(t.vehicle_id)?.nome)}</b> · ${fd(t.data)} ${esc(t.hora_saida || '')} · ${nf(t.km_saida)} → ${nf(t.km_chegada)} km · ${esc(t.origem_destino)} · ${esc(DB.user(t.user_id)?.nome || t.motorista)}`, motivo: alheio(t), aviso: 'A viagem deixa de contar na última km, nos indicadores e nos relatórios. Os dados ficam guardados na auditoria.', ok: m => DB.delTrip(t.id, m) }); });
+  $$('[data-xf]').forEach(b => b.onclick = () => { const a = DB.d.fuelings.find(x => x.id === b.dataset.xf); confirmaExclusao({ titulo: 'Excluir abastecimento?', desc: `<b>${esc(DB.veh(a.vehicle_id)?.nome)}</b> · ${fd(a.data)} ${esc(a.hora)} · ${nf(a.litros, 2)} L · ${brl(a.total)}${a.posto ? ' · ' + esc(a.posto) : ''}`, motivo: alheio(a), aviso: 'O abastecimento deixa de contar no consumo e nos relatórios. Os dados ficam guardados na auditoria.', ok: m => DB.delFuel(a.id, m) }); });
+}
+function tripDialog(t) {
+  dialog(`<form id="etf"><div class="dh"><h2>Editar viagem</h2></div><div class="dialog-body"><div class="f" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">
+    <label class="fld">Data<input id="e-data" type="date" value="${t.data}"></label>
+    <label class="fld">Hora de saída<input id="e-hs" type="time" value="${esc(String(t.hora_saida || '').slice(0, 5))}"></label>
+    <label class="fld">Hora de chegada<input id="e-hc" type="time" value="${esc(String(t.hora_chegada || '').slice(0, 5))}"></label>
+    <label class="fld">KM de saída<input id="e-kms" type="number" inputmode="numeric" min="0" value="${t.km_saida}"></label>
+    <label class="fld">KM de chegada<input id="e-kmc" type="number" inputmode="numeric" min="0" value="${t.km_chegada}"></label>
+    <label class="fld" style="grid-column:1/-1">Origem / Destino<input id="e-od" value="${esc(t.origem_destino)}"></label>
+    <label class="fld">Motorista<input id="e-mot" value="${esc(t.motorista)}"></label>
+    <label class="fld">Finalidade<input id="e-fin" value="${esc(t.finalidade || '')}"></label>
+    <label class="fld" style="grid-column:1/-1">Observações<input id="e-obs" value="${esc(t.obs || '')}"></label>
+    <label class="check"><input type="checkbox" id="e-visto" ${t.visto ? 'checked' : ''}> Visto do motorista</label></div><div id="e-err"></div></div>
+    <div class="dialog-foot"><button type="button" class="btn sec" id="c">Cancelar</button><button class="btn">Salvar alterações</button></div></form>`, d => {
+    $('#c', d).onclick = closeDlg;
+    $('#etf', d).onsubmit = async e => {
+      e.preventDefault(); const g = id => $('#' + id, d).value.trim();
+      const p = { data: g('e-data'), hora_saida: g('e-hs') || null, hora_chegada: g('e-hc') || null, km_saida: Number(g('e-kms')), km_chegada: Number(g('e-kmc')), origem_destino: g('e-od'), motorista: g('e-mot'), finalidade: g('e-fin') || null, obs: g('e-obs') || null, visto: $('#e-visto', d).checked };
+      let err = '';
+      if (!p.data) err = 'Informe a data.'; else if (p.data > today()) err = 'A data não pode ser futura.';
+      else if (g('e-kms') === '' || g('e-kmc') === '' || p.km_saida < 0) err = 'Informe KM de saída e de chegada.';
+      else if (p.km_chegada < p.km_saida) err = 'KM de chegada não pode ser menor que a KM de saída.';
+      else if (!p.origem_destino || !p.motorista) err = 'Informe origem/destino e motorista.';
+      if (err) { $('#e-err').innerHTML = `<div class="msg err">${esc(err)}</div>`; return; }
+      try { await DB.editTrip(t.id, p); closeDlg(); toast('Viagem atualizada. Indicadores recalculados.'); route(); } catch (x) { $('#e-err').innerHTML = `<div class="msg err">${esc(x.message)}</div>`; }
+    };
+  });
+}
+function fuelDialog(a) {
+  dialog(`<form id="eff"><div class="dh"><h2>Editar abastecimento</h2></div><div class="dialog-body"><div class="f" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">
+    <label class="fld">Data<input id="e-data" type="date" value="${a.data}"></label>
+    <label class="fld">Horário<input id="e-hora" type="time" value="${esc(String(a.hora || '').slice(0, 5))}"></label>
+    <label class="fld">KM do veículo<input id="e-km" type="number" min="0" inputmode="numeric" value="${a.km ?? ''}"></label>
+    <label class="fld">Posto<input id="e-posto" value="${esc(a.posto || '')}"></label>
+    <label class="fld">Combustível<select id="e-comb">${['Gasolina', 'Etanol', 'Diesel', 'GNV', 'Outro'].map(c => `<option ${c === a.combustivel ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
+    <label class="fld">Modalidade<select id="e-mod">${Object.entries(MOD).map(([k, l]) => `<option value="${k}" ${k === a.modalidade ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    <label class="fld">Valor total (R$)<input id="e-tot" inputmode="decimal" value="${nf(a.total, 2)}"></label>
+    <label class="fld">Preço por litro (R$/L)<input id="e-prec" inputmode="decimal" value="${nf(a.preco_litro, 3)}"></label>
+    <label class="fld" style="grid-column:1/-1">Observações<input id="e-obs" value="${esc(a.obs || '')}"></label></div><div id="e-err"></div></div>
+    <div class="dialog-foot"><button type="button" class="btn sec" id="c">Cancelar</button><button class="btn">Salvar alterações</button></div></form>`, d => {
+    $('#c', d).onclick = closeDlg;
+    $('#eff', d).onsubmit = async e => {
+      e.preventDefault(); const t = pbr($('#e-tot', d).value), pr = pbr($('#e-prec', d).value), km = $('#e-km', d).value === '' ? null : Number($('#e-km', d).value);
+      let err = '';
+      if (!$('#e-data', d).value || !$('#e-hora', d).value) err = 'Informe data e horário.'; else if ($('#e-data', d).value > today()) err = 'A data não pode ser futura.';
+      else if (!(t > 0)) err = 'Valor total inválido.'; else if (!(pr > 0)) err = 'Preço por litro inválido.'; else if (km != null && km < 0) err = 'A quilometragem deve ser 0 ou maior.';
+      if (err) { $('#e-err').innerHTML = `<div class="msg err">${esc(err)}</div>`; return; }
+      try { await DB.editFuel(a.id, { data: $('#e-data', d).value, hora: $('#e-hora', d).value, km, posto: $('#e-posto', d).value.trim() || null, combustivel: $('#e-comb', d).value, modalidade: $('#e-mod', d).value, total: t, preco_litro: pr, litros: Math.round(t / pr * 100) / 100, obs: $('#e-obs', d).value.trim() || null }); closeDlg(); toast('Abastecimento atualizado.'); route(); } catch (x) { $('#e-err').innerHTML = `<div class="msg err">${esc(x.message)}</div>`; }
+    };
+  });
+}
+
 /* ───────────── 3. Cadastros ───────────── */
 function rCadastros() {
-  const V = isAdmin() ? DB.d.vehicles : DB.vehicles();
+  const V = isAdmin() ? DB.vativos() : DB.vehicles();
   afterRender.cadastros = () => {
     $('#nv')?.addEventListener('click', () => vehicleDialog());
     $$('[data-edv]').forEach(b => b.onclick = () => vehicleDialog(DB.veh(b.dataset.edv)));
+    $$('[data-xv]').forEach(b => b.onclick = () => { const v = DB.veh(b.dataset.xv); confirmaExclusao({ titulo: 'Excluir veículo?', desc: `<b>${esc(v.nome)}</b> · placa ${esc(v.placa)} · última km ${nf(DB.lastKm(v.id).km)}`, motivo: true, aviso: 'O veículo sai do cadastro e das telas de operação. Viagens, abastecimentos e histórico de uso continuam preservados nos relatórios e na auditoria.', ok: m => DB.delVehicle(v.id, m) }); });
   };
   return `<section class="card"><header><h2>Veículos</h2><span class="grow"></span>${isAdmin() ? `<button class="btn" id="nv">${ico('plus')}Novo veículo</button>` : '<span class="muted" style="font-size:12px">Somente consulta. Cadastro feito pelo administrador.</span>'}</header>
   ${table([
     { h: 'Veículo', f: v => `<b>${esc(v.nome)}</b><div class="muted" style="font-size:12px">${esc(v.modelo || '')}</div>` }, { h: 'Placa', f: v => `<span class="plate">${esc(v.placa)}</span>` },
     { h: 'Responsável padrão', f: v => esc(DB.user(v.responsavel)?.nome || '—') }, { h: 'Última km', n: 1, f: v => `<span class="mono">${nf(DB.lastKm(v.id).km)}</span>` },
     { h: 'Troca de óleo', n: 1, f: v => v.km_troca_oleo ? `<span class="mono">${nf(v.km_troca_oleo)}</span>` : '—' }, { h: 'Situação', f: v => { const s = statusOf(v); return `<span class="pill ${s.cls}">${s.txt}</span>`; } },
-    ...(isAdmin() ? [{ h: '', f: v => `<button class="btn sm sec" data-edv="${v.id}">Editar</button>` }] : []),
+    ...(isAdmin() ? [{ h: '', f: v => `<span style="display:inline-flex;gap:6px"><button class="btn sm sec" data-edv="${v.id}">Editar</button><button class="btn sm sec danger-t" data-xv="${v.id}">Excluir</button></span>` }] : []),
   ], V)}
-  <p class="muted" style="font-size:12px;margin:10px 0 0">Sem limite de veículos. Placas são comparadas sem traço e sem espaço, para impedir duplicidade (QZH-4A95 = QZH4A95). Veículos não são excluídos: ficam inativos para preservar o histórico.</p></section>`;
+  <p class="muted" style="font-size:12px;margin:10px 0 0">Sem limite de veículos. Placas são comparadas sem traço e sem espaço, para impedir duplicidade (QZH-4A95 = QZH4A95). Excluir um veículo o retira do cadastro sem apagar viagens, abastecimentos e histórico de uso.</p></section>`;
 }
 function vehicleDialog(v) {
   const U = DB.d.users.filter(u => u.papel !== 'admin' && u.ativo);
@@ -535,7 +709,7 @@ const MOD = { avulso: 'Avulso / vinculado a viagem', req: 'Requisição Masters'
 function rAbastecimento() {
   const mine = DB.myUse(), V = DB.vehicles();
   let top = '';
-  if (isAdmin()) top = `<div class="msg info">${ico('shield')}<span>A conta MASTERS consulta os abastecimentos, mas não registra em nome dos funcionários.</span></div>`;
+  if (isAdmin()) top = `<div class="msg info">${ico('shield')}<span>Administradores consultam e corrigem abastecimentos, mas não registram em nome dos funcionários.</span></div>`;
   else if (!mine) top = `<div class="msg info">${ico('car')}<span>Assuma um veículo na <a href="#registro">tela de Registro</a> para lançar abastecimentos.</span></div>`;
   else {
     const vid = mine.vehicle_id, lk = DB.lastKm(vid), postos = [...new Set(DB.d.fuelings.map(a => a.posto).filter(Boolean))];
@@ -560,6 +734,7 @@ function rAbastecimento() {
   const A = DB.fuelings().slice().sort((a, b) => (b.data + b.hora).localeCompare(a.data + a.hora));
   const P = periodStats(isoDay(addDays(new Date(), -29)), today());
   afterRender.abastecimento = () => {
+    bindEdicao();
     const f = $('#af'); if (!f) return;
     $('#a-hora').value = new Date().toTimeString().slice(0, 5);
     const calc = () => { const t = pbr($('#a-tot').value), p = pbr($('#a-prec').value); $('#a-lit').value = t > 0 && p > 0 ? nf(Math.round(t / p * 100) / 100, 2) : ''; };
@@ -586,7 +761,7 @@ function rAbastecimento() {
   ${table([
     { h: 'Data', f: a => fd(a.data) }, { h: 'Hora', f: a => esc(a.hora) }, { h: 'Veículo', f: a => vehLabel(DB.veh(a.vehicle_id)) }, { h: 'KM', n: 1, f: a => a.km != null ? `<span class="mono">${nf(a.km)}</span>` : '—' },
     { h: 'Posto', f: a => esc(a.posto) }, { h: 'Combustível', f: a => esc(a.combustivel) }, { h: 'Modalidade', f: a => esc(MOD[a.modalidade] || '') },
-    { h: 'Litros', n: 1, f: a => nf(a.litros, 2) }, { h: 'R$/L', n: 1, f: a => nf(a.preco_litro, 3) }, { h: 'Total', n: 1, f: a => brl(a.total) }, { h: 'Registrado por', f: a => esc(DB.user(a.user_id)?.nome || 'Importação') },
+    { h: 'Litros', n: 1, f: a => nf(a.litros, 2) }, { h: 'R$/L', n: 1, f: a => nf(a.preco_litro, 3) }, { h: 'Total', n: 1, f: a => brl(a.total) }, { h: 'Registrado por', f: a => esc(DB.user(a.user_id)?.nome || 'Importação') }, { h: '', f: a => acoes(a, 'f') },
   ], A.slice(0, 40))}
   <p class="muted" style="font-size:12px;margin:10px 0 0">Proteção contra duplicidade: cada formulário tem um identificador único (clique repetido, recarga ou reenvio não criam um segundo registro) e o sistema recusa abastecimento do mesmo veículo com mesma data, horário e valor.</p></section>`;
 }
@@ -684,33 +859,36 @@ function rUsuarios() {
   afterRender.usuarios = () => {
     $('#nu').onclick = () => userDialog();
     $$('[data-edu]').forEach(b => b.onclick = () => userDialog(DB.user(b.dataset.edu)));
+    $$('[data-xu]').forEach(b => b.onclick = () => { const u = DB.user(b.dataset.xu); confirmaExclusao({ titulo: 'Excluir usuário?', desc: `<b>${esc(u.nome)}</b> · usuário ${esc(u.usuario)} · ${u.papel === 'admin' ? 'Administrador' : 'Funcionário'}`, motivo: true, aviso: 'O acesso é bloqueado e a pessoa sai das listas. Viagens, abastecimentos e histórico dela continuam preservados.', ok: m => DB.delUser(u.id, m) }); });
   };
   return `<section class="card"><header><h2>Usuários</h2><span class="grow"></span><button class="btn" id="nu">${ico('plus')}Novo usuário</button></header>
   ${table([
     { h: 'Nome', f: u => `<b>${esc(u.nome)}</b>` }, { h: 'Usuário', f: u => `<span class="mono">${esc(u.usuario)}</span>` },
     { h: 'Perfil', f: u => u.papel === 'admin' ? '<span class="pill p-info">Administrador</span>' : '<span class="pill p-mute">Funcionário</span>' },
-    { h: 'Veículos autorizados', f: u => u.papel === 'admin' ? '<span class="muted">Não opera veículos</span>' : DB.d.vehicles.filter(v => v.responsavel === u.id || (v.autorizados || []).includes(u.id)).map(v => `<span class="plate">${esc(v.placa)}</span>`).join(' ') || '—' },
+    { h: 'Veículos autorizados', f: u => u.papel === 'admin' ? '<span class="muted">Não opera veículos</span>' : DB.vativos().filter(v => v.responsavel === u.id || (v.autorizados || []).includes(u.id)).map(v => `<span class="plate">${esc(v.placa)}</span>`).join(' ') || '—' },
     { h: 'Com veículo', f: u => { const x = DB.d.usage.find(z => z.user_id === u.id && z.status === 'ativa'); return x ? esc(DB.veh(x.vehicle_id).nome) : '—'; } },
     { h: 'Situação', f: u => u.ativo ? '<span class="pill p-ok">Ativo</span>' : '<span class="pill p-mute">Inativo</span>' },
-    { h: '', f: u => u.papel === 'admin' ? '' : `<button class="btn sm sec" data-edu="${u.id}">Editar</button>` },
-  ], DB.d.users)}
-  <p class="muted" style="font-size:12px;margin:10px 0 0">MASTERS é o único administrador e não pode ser responsável por veículo. O acesso é feito só com usuário e senha, sem e-mail. O administrador define a senha inicial e pode redefini-la; cada funcionário pode trocá-la em "Alterar minha senha".</p></section>`;
+    ...(window.CLOUD ? [{ h: 'E-mail de recuperação', f: u => DB.d.privados?.[u.id] ? `<span style="font-size:12px">${esc(DB.d.privados[u.id])}</span>` : '<span class="muted">—</span>' }] : []),
+    { h: '', f: u => `<span style="display:inline-flex;gap:6px">${window.CLOUD || u.papel !== 'admin' ? `<button class="btn sm sec" data-edu="${u.id}">Editar</button>` : ''}${u.id !== S.user.id ? `<button class="btn sm sec danger-t" data-xu="${u.id}">Excluir</button>` : ''}</span>` },
+  ], DB.d.users.filter(u => !u.excluido_em))}
+  <p class="muted" style="font-size:12px;margin:10px 0 0">Administradores não são responsáveis por veículos. O acesso é feito só com usuário e senha; o e-mail de recuperação serve apenas para receber o link de nova senha. O administrador define a senha inicial e pode redefini-la; cada pessoa pode trocá-la em "Alterar minha senha".</p></section>`;
 }
 function userDialog(u) {
   dialog(`<form id="uf"><div class="dh"><h2>${u ? 'Editar usuário' : 'Novo usuário'}</h2></div><div class="dialog-body">
     <label class="fld">Usuário (login)<input id="u-us" value="${esc(u?.usuario)}" ${u ? 'readonly' : ''} placeholder="Ex.: JOAO"></label>
     <label class="fld">Nome completo<input id="u-nm" value="${esc(u?.nome)}"></label>
     ${window.CLOUD ? `<label class="fld">${u ? 'Nova senha (deixe em branco para manter)' : 'Senha inicial'}<input id="u-pw" type="password" autocomplete="new-password"><span class="hint muted">Mínimo de 6 caracteres. O funcionário pode trocar depois em "Alterar minha senha".</span></label>` : ''}
-    ${u ? `<label class="check"><input type="checkbox" id="u-at" ${u.ativo ? 'checked' : ''}> Usuário ativo</label>` : '<p class="muted" style="margin:0;font-size:12px">Perfil: Funcionário. Autorize veículos em Alocação de veículos.</p>'}
+    ${window.CLOUD ? `<label class="fld">E-mail para recuperação de senha (opcional)<input id="u-em" type="email" inputmode="email" value="${esc(u ? DB.d.privados?.[u.id] || '' : '')}"><span class="hint muted">Usado só para enviar o link de nova senha. Não é usado para entrar.</span></label>` : ''}
+    ${u && u.id !== S.user.id ? `<label class="check"><input type="checkbox" id="u-at" ${u.ativo ? 'checked' : ''}> Usuário ativo</label>` : u ? '' : '<p class="muted" style="margin:0;font-size:12px">Perfil: Funcionário. Autorize veículos em Alocação de veículos.</p>'}
     <div id="u-err"></div></div><div class="dialog-foot"><button type="button" class="btn sec" id="c">Cancelar</button><button class="btn">Salvar</button></div></form>`, d => {
     $('#c', d).onclick = closeDlg;
-    $('#uf', d).onsubmit = async e => { e.preventDefault(); try { await DB.saveUser({ id: u?.id, usuario: $('#u-us').value, nome: $('#u-nm').value, ativo: u ? $('#u-at').checked : true, senha: $('#u-pw')?.value || '' }); closeDlg(); toast('Usuário salvo.'); route(); } catch (x) { $('#u-err').innerHTML = `<div class="msg err">${esc(x.message)}</div>`; } };
+    $('#uf', d).onsubmit = async e => { e.preventDefault(); try { await DB.saveUser({ id: u?.id, usuario: $('#u-us').value, nome: $('#u-nm').value, ativo: u ? ($('#u-at') ? $('#u-at').checked : u.ativo) : true, senha: $('#u-pw')?.value || '', email: $('#u-em')?.value.trim() }); closeDlg(); toast('Usuário salvo.'); route(); } catch (x) { $('#u-err').innerHTML = `<div class="msg err">${esc(x.message)}</div>`; } };
   });
 }
 
 /* ───────────── 7. Liberações ───────────── */
 function rLiberacoes() {
-  const V = DB.d.vehicles, H = DB.d.usage.slice().sort((a, b) => b.inicio.localeCompare(a.inicio));
+  const V = DB.vativos(), H = DB.d.usage.slice().sort((a, b) => b.inicio.localeCompare(a.inicio));
   afterRender.liberacoes = () => $$('[data-adm]').forEach(b => b.onclick = () => {
     const v = DB.veh(b.dataset.adm), u = DB.activeUse(v.id);
     dialog(`<form id="lf2"><div class="dh"><h2>Liberação administrativa</h2></div><div class="dialog-body">
@@ -739,7 +917,7 @@ function rAlocacao() {
     try { await DB.alocar(vid, $('select', box).value, $$('input[type=checkbox]:checked', box).map(c => c.value)); toast('Alocação salva.'); route(); } catch (x) { toast(x.message); }
   });
   return `<div class="msg info">${ico('shield')}<span>O responsável padrão e os autorizados podem assumir o veículo. Uso simultâneo é bloqueado: um veículo só pode estar com uma pessoa por vez. MASTERS não aparece nas opções.</span></div>
-  <div class="fleet" style="grid-template-columns:repeat(auto-fill,minmax(290px,1fr))">${DB.d.vehicles.map(v => { const s = statusOf(v); return `<article class="veh">
+  <div class="fleet" style="grid-template-columns:repeat(auto-fill,minmax(290px,1fr))">${DB.vativos().map(v => { const s = statusOf(v); return `<article class="veh">
     <div class="row"><b>${esc(v.nome)}</b><span class="plate">${esc(v.placa)}</span></div><div><span class="pill ${s.cls}">${s.txt}${s.u ? ' · ' + esc(DB.user(s.u.user_id)?.nome) : ''}</span></div>
     <label class="fld">Responsável padrão<select>${['<option value="">Sem responsável (remover atribuição)</option>', ...U.map(u => `<option value="${u.id}" ${v.responsavel === u.id ? 'selected' : ''}>${esc(u.nome)}</option>`)].join('')}</select></label>
     <div style="display:grid;gap:4px"><span class="muted" style="font-size:12px;font-weight:600">Também autorizados</span>${U.map(u => `<label class="check"><input type="checkbox" value="${u.id}" ${(v.autorizados || []).includes(u.id) ? 'checked' : ''}> ${esc(u.nome)}</label>`).join('')}</div>
@@ -905,6 +1083,42 @@ function doImport() {
   toast(`Importação concluída: ${nv} viagens e ${na} abastecimentos.`); return { tv: nv, ta: na, iv: 0, ia: 0, erros: [] };
 }
 
+/* ───────────── Recuperação de acesso (administradores) ───────────── */
+function rAcessos() {
+  if (!window.CLOUD) return '<section class="card"><div class="msg info">Os pedidos de recuperação de acesso funcionam somente no sistema oficial.</div></section>';
+  const P = DB.d.acessos || [], ab = P.filter(r => r.status === 'aberta'), F = DB.d.users.filter(u => u.ativo);
+  afterRender.acessos = () => $$('[data-at]').forEach(b => b.onclick = () => {
+    const r = P.find(x => String(x.id) === b.dataset.at), temEmail = uid => !!DB.d.privados?.[uid];
+    dialog(`<form id="af"><div class="dh"><h2>Atender pedido de ${esc(r.nome_informado)}</h2></div><div class="dialog-body">
+      <div class="msg warn">${ico('shield')}<span>Antes de liberar, confirme a identidade: ligue para um telefone que você já conhece do funcionário (não só o informado no pedido) ou confira pessoalmente.</span></div>
+      <p style="margin:0;font-size:13px">Informado: usuário <b class="mono">${esc(r.usuario_informado)}</b> · contato ${esc(r.contato)}${r.mensagem ? ` · "${esc(r.mensagem)}"` : ''}</p>
+      <label class="fld">Usuário cadastrado<select id="a-us"><option value="">Selecione…</option>${F.map(u => `<option value="${u.id}" ${u.id === r.user_id ? 'selected' : ''}>${esc(u.nome)} (${esc(u.usuario)})</option>`).join('')}</select></label>
+      <label class="fld">Como a identidade foi confirmada<textarea id="a-vf" rows="2" placeholder="Ex.: liguei para o celular cadastrado e confirmei os dados"></textarea></label>
+      <div style="display:grid;gap:6px"><label class="check"><input type="radio" name="a-tp" value="senha_temporaria" checked> Gerar senha temporária (troca obrigatória no próximo acesso)</label>
+      <label class="check"><input type="radio" name="a-tp" value="enviar_link"> Enviar link para o e-mail de recuperação cadastrado</label>
+      <label class="check"><input type="radio" name="a-tp" value="recusar"> Recusar o pedido</label></div>
+      <label class="fld">Observação (opcional)<input id="a-rs" maxlength="300"></label><div id="a-err"></div></div>
+      <div class="dialog-foot"><button type="button" class="btn sec" id="c">Cancelar</button><button class="btn">Confirmar</button></div></form>`, d => {
+      $('#c', d).onclick = closeDlg;
+      $('#af', d).onsubmit = async e => {
+        e.preventDefault(); const tipo = $('input[name=a-tp]:checked', d).value, us = $('#a-us', d).value;
+        if (tipo !== 'recusar' && !us) { $('#a-err').innerHTML = '<div class="msg err">Escolha o usuário cadastrado que corresponde ao pedido.</div>'; return; }
+        if (tipo !== 'recusar' && $('#a-vf', d).value.trim().length < 5) { $('#a-err').innerHTML = '<div class="msg err">Descreva como a identidade foi confirmada.</div>'; return; }
+        if (tipo === 'enviar_link' && us && !temEmail(us)) { $('#a-err').innerHTML = '<div class="msg err">Este usuário não tem e-mail de recuperação cadastrado. Cadastre em Usuários ou use a senha temporária.</div>'; return; }
+        try {
+          const x = await CLOUD.atender({ id: r.id, user_id: us || null, tipo, verificacao: $('#a-vf', d).value, resolucao: $('#a-rs', d).value });
+          if (x.senha_temporaria) dialog(`<div class="dh"><h2>Senha temporária</h2></div><div class="dialog-body"><p style="margin:0">Entregue pessoalmente ou por telefone ao funcionário. Ela aparece só agora e não fica gravada em lugar nenhum.</p><p class="mono" style="font-size:24px;margin:0;user-select:all">${esc(x.senha_temporaria)}</p><p class="muted" style="margin:0;font-size:12px">No próximo acesso, o sistema pede que ele crie a própria senha.</p></div><div class="dialog-foot"><button class="btn" id="c">Fechar</button></div>`, d2 => { $('#c', d2).onclick = () => { closeDlg(); route(); }; });
+          else { closeDlg(); toast(tipo === 'recusar' ? 'Pedido recusado.' : 'Link enviado.'); route(); }
+        } catch (x) { $('#a-err').innerHTML = `<div class="msg err">${esc(x.message)}</div>`; }
+      };
+    });
+  });
+  const st = { aberta: ['p-warn', 'Aguardando'], atendida: ['p-ok', 'Atendido'], recusada: ['p-mute', 'Recusado'] };
+  return `<section class="card"><header><h2>Pedidos de recuperação de acesso</h2><span class="grow"></span><span class="pill ${ab.length ? 'p-warn' : 'p-ok'}">${ab.length ? ab.length + ' aguardando' : 'Nenhum pendente'}</span></header>
+  ${table([{ h: 'Pedido em', f: r => `<span class="mono">${fdt(r.criado_em)}</span>` }, { h: 'Informado', f: r => `<b>${esc(r.nome_informado)}</b><div class="muted mono" style="font-size:12px">${esc(r.usuario_informado)}</div>` }, { h: 'Contato', f: r => esc(r.contato) }, { h: 'Cadastro', f: r => { const u = DB.user(r.user_id); return u ? `${esc(u.nome)}${u.ativo ? '' : ' <span class="pill p-mute">inativo</span>'}` : '<span class="pill p-warn">não encontrado</span>'; } }, { h: 'Situação', f: r => `<span class="pill ${st[r.status][0]}">${st[r.status][1]}</span>${r.resolucao ? `<div class="muted" style="font-size:12px">${esc(r.resolucao)}</div>` : ''}` }, { h: '', f: r => r.status === 'aberta' ? `<button class="btn sm" data-at="${r.id}">Atender</button>` : '' }], P, 'Nenhum pedido de recuperação até agora.')}
+  <p class="muted" style="font-size:12px;margin:10px 0 0">Cada atendimento fica na Auditoria com quem atendeu e como a identidade foi confirmada. Viagens, abastecimentos e histórico do funcionário não são alterados.</p></section>`;
+}
+
 /* ───────────── Auditoria ───────────── */
 function rAuditoria() {
   return `<section class="card"><header><h2>Registro de operações</h2><span class="grow"></span><span class="muted" style="font-size:12px">${DB.d.audit.length} eventos</span></header>
@@ -919,7 +1133,10 @@ if ('serviceWorker' in navigator && location.protocol === 'https:' && window.top
     $('#demoBand').hidden = true;
     $('#root').innerHTML = `<div style="min-height:80vh;display:grid;place-items:center;color:var(--muted)">Verificando acesso…</div>`;
     CLOUD.install(); DB.d = { users: [], vehicles: [], trips: [], fuelings: [], usage: [], audit: [] };
+    const th = (location.hash.match(/^#recuperar=([^&]+)/) || [])[1];
+    if (th) history.replaceState(null, '', location.pathname + location.search); // tira o token do endereço
     try { S.user = await CLOUD.start(); } catch (x) { S.user = null; toast(x.message); }
+    if (th) { S.user = null; renderLogin(); return telaNovaSenha(decodeURIComponent(th)); }
     return S.user ? renderShell() : renderLogin();
   }
   DB.load();
