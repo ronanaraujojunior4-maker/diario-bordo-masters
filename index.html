@@ -79,7 +79,8 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 .side a:hover{background:rgba(255,255,255,.06);color:#fff}
 .side a.on{background:linear-gradient(90deg,rgba(47,107,255,.32),rgba(23,195,220,.12));color:#fff}
 .side a.on::before{content:"";position:absolute;left:-12px;top:8px;bottom:8px;width:3px;border-radius:3px;background:var(--cyan)}
-.side .foot{margin-top:auto;display:grid;gap:6px;border-top:1px solid rgba(255,255,255,.08);padding-top:10px}
+.side{overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;padding-bottom:0}
+.side .foot{margin-top:auto;display:grid;gap:6px;border-top:1px solid rgba(255,255,255,.08);padding-top:10px;position:sticky;bottom:0;background:#0D2147;padding-bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:1}
 .side button.lnk{display:flex;align-items:center;gap:12px;padding:9px 10px;border-radius:10px;border:0;background:none;color:inherit;cursor:pointer;text-align:left}
 .side button.lnk:hover{background:rgba(255,255,255,.06);color:#fff}
 .me{display:flex;align-items:center;gap:10px;padding:6px 8px}
@@ -187,6 +188,15 @@ fieldset.rec{border:1px solid var(--line);border-radius:12px;padding:12px 14px;d
 fieldset.rec legend{font-weight:700;padding:0 6px}
 
 .btn.danger-t{color:var(--crit)}
+/* registro selecionável + barra de ações */
+tr.selable{cursor:pointer}tr.selable:hover td{background:rgba(47,107,255,.05)}
+tr.selable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+tr.sel td{background:rgba(47,107,255,.14)!important}tr.sel td:first-child{box-shadow:inset 4px 0 0 var(--accent)}
+.selbar{position:fixed;z-index:35;left:calc(var(--side) + 24px);right:24px;bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:0 12px 32px rgba(7,14,28,.18);padding:12px 14px}
+.selbar[hidden]{display:none}
+.selbar .sb-t{flex:1 1 260px;display:grid;gap:2px;min-width:0}.selbar .sb-t small,.selbar .sb-t span{color:var(--muted);font-size:12px}
+.selbar .sb-a{display:flex;gap:8px;flex-wrap:wrap}.selbar .btn{min-height:44px;min-width:96px;justify-content:center}
+.page{padding-bottom:120px}
 .kpi .fo{display:flex;gap:14px;flex-wrap:wrap;margin:2px 0}.kpi .fo span{display:grid;font-size:11px;color:var(--muted);line-height:1.2}.kpi .fo b{font-family:var(--f-display);font-size:22px;color:var(--fg)}
 
 /* celular */
@@ -202,7 +212,9 @@ fieldset.rec legend{font-weight:700;padding:0 6px}
   .app.collapsed .brand .narrow{display:none}
   #collapse{display:none}
   .top,.page{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
-  .page{padding-bottom:90px}
+  .page{padding-bottom:180px}
+  .selbar{left:8px;right:8px;bottom:calc(64px + env(safe-area-inset-bottom,0px));padding:10px 12px}
+  .selbar .sb-a{width:100%}.selbar .sb-a .btn{flex:1}
   h1{font-size:20px}
   .bottom{display:grid;grid-template-columns:repeat(4,1fr);position:fixed;left:0;right:0;bottom:0;z-index:30;background:var(--surface);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px);padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inset-right,0px)}
   .bottom a,.bottom button{display:grid;justify-items:center;gap:2px;padding:8px 4px;font-size:11px;color:var(--muted);text-decoration:none;border:0;background:none;cursor:pointer}

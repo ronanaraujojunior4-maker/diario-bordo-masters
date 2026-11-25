@@ -114,7 +114,6 @@ const DB = {
   arquivar(lista, id, motivo, entidade, rotulo) { // exclusão lógica: o registro sai das telas e indicadores, mas fica guardado com quem, quando e por quê
     const i = this.d[lista].findIndex(x => x.id === id), r = this.d[lista][i];
     if (!r || !this.canEdit(r)) throw Error('Você só pode excluir os seus próprios registros.');
-    if (r.user_id !== S.user.id && !String(motivo || '').trim()) throw Error('Informe a justificativa para excluir registro de outra pessoa.');
     this.d[lista].splice(i, 1); (this.d.lixeira ||= []).push({ lista, ...r, excluido_em: new Date().toISOString(), excluido_por: S.user.id, motivo_exclusao: motivo || '' });
     this.audit('EXCLUSAO', entidade, id, `${rotulo}. Dados anteriores: ${JSON.stringify(r)}${motivo ? `. Justificativa: ${motivo}` : ''}`); this.save();
   },
@@ -410,8 +409,10 @@ function route() {
   $('#t-title').textContent = r.label; $('#t-sub').textContent = r.sub;
   S.charts.forEach(c => c.destroy()); S.charts = [];
   const p = $('#page'); p.style.animation = 'none'; p.offsetHeight; p.style.animation = '';
+  if (S.selRota !== r.id) S.sel = null; S.selRota = r.id;
   p.innerHTML = r.render();
   r.after?.(); afterRender[r.id]?.();
+  mostraSel(); // após salvar/excluir: atualiza a barra com o registro novo ou some se ele saiu da lista
 }
 const afterRender = {};
 window.addEventListener('hashchange', () => S.user && route());
@@ -445,7 +446,7 @@ function bindVehActions() {
 }
 function table(cols, rows, empty = 'Nenhum registro encontrado.') {
   if (!rows.length) return `<div class="tw"><div class="empty">${empty}</div></div>`;
-  return `<div class="tw"><table><thead><tr>${cols.map(c => `<th class="${c.n ? 'n' : ''}">${c.h}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr class="${r.__flag ? 'flag' : ''}">${cols.map(c => `<td class="${c.n ? 'n' : ''}">${c.f(r)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  return `<div class="tw"><table><thead><tr>${cols.map(c => `<th class="${c.n ? 'n' : ''}">${c.h}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr class="${r.__flag ? 'flag' : ''}${r.__sel ? ' selable' : ''}"${r.__sel ? ` data-sel="${r.__sel}" tabindex="0" aria-selected="false"` : ''}>${cols.map(c => `<td class="${c.n ? 'n' : ''}">${c.f(r)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 function mkChart(id, cfg) {
@@ -618,30 +619,51 @@ function rRegistro() {
       { h: 'Rodado', n: 1, f: r => `<span class="mono">${nf(r.km_chegada - r.km_saida)}</span>` }, { h: 'Origem / Destino', f: r => esc(r.origem_destino) },
       { h: 'Motorista', f: r => esc(r.motorista) }, { h: 'Finalidade', f: r => esc(r.finalidade) }, { h: 'Visto', f: r => r.visto ? 'OK' : '' },
       { h: 'Situação', f: r => inc.has(r.id) ? '<span class="pill p-warn">KM divergente</span>' : r.origem === 'importacao' ? '<span class="pill p-cyan">Importada</span>' : '<span class="pill p-ok">Válida</span>' },
-      { h: '', f: r => acoes(r, 't') },
-    ], T.slice(0, 40).map(r => ({ ...r, __flag: inc.has(r.id) })), 'Nenhuma viagem registrada para este veículo.')}
+    ], T.slice(0, 40).map(r => ({ ...r, __flag: inc.has(r.id), __sel: 't:' + r.id })), 'Nenhuma viagem registrada para este veículo.')}
     ${T.length > 40 ? `<p class="muted" style="font-size:12px">Mostrando as 40 mais recentes de ${T.length}. Use Relatórios para o histórico completo.</p>` : ''}
   </section>`;
 }
 
 /* Editar e excluir (ações distintas) */
-const acoes = (r, k) => DB.canEdit(r) ? `<span style="display:inline-flex;gap:6px"><button class="btn sm sec" data-e${k}="${r.id}">Editar</button><button class="btn sm sec danger-t" data-x${k}="${r.id}">Excluir</button></span>` : '';
-function confirmaExclusao({ titulo, desc, motivo, aviso, ok }) {
+/* Seleção: Editar e Excluir só aparecem depois de tocar/clicar em uma viagem ou abastecimento (barra inferior). */
+function selRec() { const x = S.sel; if (!x) return null; const r = (x.k === 't' ? DB.d.trips : DB.d.fuelings).find(y => y.id === x.id); return r && $(`tr[data-sel="${x.k}:${x.id}"]`) ? { ...x, r } : null; }
+function limpaSel() { S.sel = null; $$('tr.sel').forEach(t => { t.classList.remove('sel'); t.setAttribute('aria-selected', 'false'); }); const b = $('#selbar'); if (b) b.hidden = true; }
+function mostraSel() {
+  const x = selRec(); if (!x) return limpaSel();
+  $$('tr[data-sel]').forEach(t => { const on = t.dataset.sel === x.k + ':' + x.id; t.classList.toggle('sel', on); t.setAttribute('aria-selected', String(on)); });
+  let b = $('#selbar'); if (!b) { b = document.createElement('div'); b.id = 'selbar'; b.className = 'selbar'; b.setAttribute('role', 'region'); b.setAttribute('aria-label', 'Ações do registro selecionado'); ($('#app') || document.body).append(b); }
+  const r = x.r, v = DB.veh(r.vehicle_id), pode = DB.canEdit(r);
+  const desc = x.k === 't' ? `<small>Viagem selecionada</small><b>${esc(v?.nome || '')} · ${fd(r.data)} ${esc(r.hora_saida || '')} · ${nf(r.km_saida)} → ${nf(r.km_chegada)} km</b>` : `<small>Abastecimento selecionado</small><b>${esc(v?.nome || '')} · ${fd(r.data)} ${esc(r.hora || '')} · ${nf(r.litros, 2)} L · ${brl(r.total)}</b>`;
+  b.innerHTML = `<div class="sb-t">${desc}${pode ? '' : '<span>Registro de outra pessoa: só o autor ou um administrador pode alterar.</span>'}</div>
+    <div class="sb-a">${pode ? `<button type="button" class="btn" id="sb-e">Editar</button><button type="button" class="btn danger" id="sb-x">Excluir</button>` : ''}<button type="button" class="btn sec" id="sb-c">Fechar</button></div>`;
+  b.hidden = false;
+  $('#sb-c').onclick = limpaSel;
+  if (pode) { $('#sb-e').onclick = () => x.k === 't' ? tripDialog(r) : fuelDialog(r); $('#sb-x').onclick = () => excluirReg(x.k, r); }
+}
+document.addEventListener('click', e => {
+  const tr = e.target.closest('tr[data-sel]'); if (!tr || e.target.closest('a,button,input,select,textarea,label')) return;
+  const [k, id] = tr.dataset.sel.split(':'); if (S.sel?.id === id) limpaSel(); else { S.sel = { k, id }; mostraSel(); }
+});
+document.addEventListener('keydown', e => {
+  const tr = e.target.closest?.('tr[data-sel]'); if (tr && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); tr.click(); }
+  else if (e.key === 'Escape' && S.sel && !$('#dlg')?.open) limpaSel();
+});
+function excluirReg(k, r) {
+  const v = DB.veh(r.vehicle_id);
+  if (k === 't') confirmaExclusao({ titulo: 'Excluir viagem?', desc: `<b>${esc(v?.nome)}</b> · ${fd(r.data)} ${esc(r.hora_saida || '')} · ${nf(r.km_saida)} → ${nf(r.km_chegada)} km · ${esc(r.origem_destino)} · ${esc(DB.user(r.user_id)?.nome || r.motorista)}`, semMotivo: true, aviso: 'A viagem deixa de contar na última km, nos indicadores e nos relatórios. Os dados ficam guardados na auditoria.', ok: () => DB.delTrip(r.id) });
+  else confirmaExclusao({ titulo: 'Excluir abastecimento?', desc: `<b>${esc(v?.nome)}</b> · ${fd(r.data)} ${esc(r.hora)} · ${nf(r.litros, 2)} L · ${brl(r.total)}${r.posto ? ' · ' + esc(r.posto) : ''}`, semMotivo: true, aviso: 'O abastecimento deixa de contar no consumo e nos relatórios. Os dados ficam guardados na auditoria.', ok: () => DB.delFuel(r.id) });
+}
+function confirmaExclusao({ titulo, desc, motivo, semMotivo, aviso, ok }) {
   dialog(`<form id="xf"><div class="dh"><h2>${esc(titulo)}</h2></div><div class="dialog-body">
     <p style="margin:0">${desc}</p>${aviso ? `<div class="msg info">${esc(aviso)}</div>` : ''}
-    <label class="fld">Justificativa${motivo ? ' (obrigatória)' : ' (opcional)'}<textarea id="x-mt" rows="2" maxlength="300"></textarea></label><div id="x-err"></div></div>
+    ${semMotivo ? '' : `<label class="fld">Justificativa${motivo ? ' (obrigatória)' : ' (opcional)'}<textarea id="x-mt" rows="2" maxlength="300"></textarea></label>`}<div id="x-err"></div></div>
     <div class="dialog-foot"><button type="button" class="btn sec" id="c">Cancelar</button><button class="btn danger">Excluir</button></div></form>`, d => {
     $('#c', d).onclick = closeDlg;
-    $('#xf', d).onsubmit = async e => { e.preventDefault(); const m = $('#x-mt', d).value.trim(); if (motivo && !m) { $('#x-err').innerHTML = '<div class="msg err">Informe a justificativa.</div>'; return; } try { await ok(m); closeDlg(); toast('Registro excluído. A auditoria guarda os dados anteriores.'); route(); } catch (x) { $('#x-err').innerHTML = `<div class="msg err">${esc(x.message)}</div>`; } };
+    $('#xf', d).onsubmit = async e => { e.preventDefault(); const m = $('#x-mt', d)?.value.trim() || ''; if (motivo && !m) { $('#x-err').innerHTML = '<div class="msg err">Informe a justificativa.</div>'; return; } try { await ok(m); closeDlg(); toast('Registro excluído. A auditoria guarda os dados anteriores.'); route(); } catch (x) { $('#x-err').innerHTML = `<div class="msg err">${esc(x.message)}</div>`; } };
   });
 }
 const alheio = r => r.user_id !== S.user.id;
-function bindEdicao() {
-  $$('[data-et]').forEach(b => b.onclick = () => tripDialog(DB.d.trips.find(t => t.id === b.dataset.et)));
-  $$('[data-ef]').forEach(b => b.onclick = () => fuelDialog(DB.d.fuelings.find(t => t.id === b.dataset.ef)));
-  $$('[data-xt]').forEach(b => b.onclick = () => { const t = DB.d.trips.find(x => x.id === b.dataset.xt); confirmaExclusao({ titulo: 'Excluir viagem?', desc: `<b>${esc(DB.veh(t.vehicle_id)?.nome)}</b> · ${fd(t.data)} ${esc(t.hora_saida || '')} · ${nf(t.km_saida)} → ${nf(t.km_chegada)} km · ${esc(t.origem_destino)} · ${esc(DB.user(t.user_id)?.nome || t.motorista)}`, motivo: alheio(t), aviso: 'A viagem deixa de contar na última km, nos indicadores e nos relatórios. Os dados ficam guardados na auditoria.', ok: m => DB.delTrip(t.id, m) }); });
-  $$('[data-xf]').forEach(b => b.onclick = () => { const a = DB.d.fuelings.find(x => x.id === b.dataset.xf); confirmaExclusao({ titulo: 'Excluir abastecimento?', desc: `<b>${esc(DB.veh(a.vehicle_id)?.nome)}</b> · ${fd(a.data)} ${esc(a.hora)} · ${nf(a.litros, 2)} L · ${brl(a.total)}${a.posto ? ' · ' + esc(a.posto) : ''}`, motivo: alheio(a), aviso: 'O abastecimento deixa de contar no consumo e nos relatórios. Os dados ficam guardados na auditoria.', ok: m => DB.delFuel(a.id, m) }); });
-}
+function bindEdicao() { } // ações agora na barra do registro selecionado (mostraSel)
 function tripDialog(t) {
   dialog(`<form id="etf"><div class="dh"><h2>Editar viagem</h2></div><div class="dialog-body"><div class="f" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px">
     <label class="fld">Data<input id="e-data" type="date" value="${t.data}"></label>
@@ -784,8 +806,8 @@ function rAbastecimento() {
   ${table([
     { h: 'Data', f: a => fd(a.data) }, { h: 'Hora', f: a => esc(a.hora) }, { h: 'Veículo', f: a => vehLabel(DB.veh(a.vehicle_id)) }, { h: 'KM', n: 1, f: a => a.km != null ? `<span class="mono">${nf(a.km)}</span>` : '—' },
     { h: 'Posto', f: a => esc(a.posto) }, { h: 'Combustível', f: a => esc(a.combustivel) }, { h: 'Modalidade', f: a => esc(MOD[a.modalidade] || '') },
-    { h: 'Litros', n: 1, f: a => nf(a.litros, 2) }, { h: 'R$/L', n: 1, f: a => nf(a.preco_litro, 3) }, { h: 'Total', n: 1, f: a => brl(a.total) }, { h: 'Registrado por', f: a => esc(DB.user(a.user_id)?.nome || 'Importação') }, { h: '', f: a => acoes(a, 'f') },
-  ], A.slice(0, 40))}
+    { h: 'Litros', n: 1, f: a => nf(a.litros, 2) }, { h: 'R$/L', n: 1, f: a => nf(a.preco_litro, 3) }, { h: 'Total', n: 1, f: a => brl(a.total) }, { h: 'Registrado por', f: a => esc(DB.user(a.user_id)?.nome || 'Importação') }
+  ], A.slice(0, 40).map(a => ({ ...a, __sel: 'f:' + a.id })))}
   <p class="muted" style="font-size:12px;margin:10px 0 0">Proteção contra duplicidade: cada formulário tem um identificador único (clique repetido, recarga ou reenvio não criam um segundo registro) e o sistema recusa abastecimento do mesmo veículo com mesma data, horário e valor.</p></section>`;
 }
 
