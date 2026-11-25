@@ -7,11 +7,10 @@ Sistema novo e independente. Não usa o código, o Firebase nem a publicação d
 - Sistema (banco real, Supabase): https://ronanaraujojunior4-maker.github.io/diario-bordo-masters/
 - Demonstração com dados fictícios: https://ronanaraujojunior4-maker.github.io/diario-bordo-masters/?demo
 
-## Situação atual: versão de apresentação
+## Situação atual: em uso (banco real)
 
-- Roda em **modo demonstração**: dados fictícios gravados só no navegador (localStorage), com faixa "Ambiente de demonstração" sempre visível.
-- Perfis de demonstração (senha `demo`): `MASTERS` (administrador), `RONAN`, `ECCLESTON`, `VALDINEI`.
-- "Restaurar demo", no menu, volta à base fictícia original.
+- O endereço principal usa o Supabase (login só com usuário e senha). `?demo` abre a demonstração com dados fictícios no navegador.
+- Funciona no celular (Android e iPhone) e pode ser instalado na tela inicial (PWA: `manifest.webmanifest` + `sw.js`). A sessão continua após fechar o navegador; só sai ao tocar em "Sair".
 
 ## Estrutura
 
@@ -20,10 +19,13 @@ Sistema novo e independente. Não usa o código, o Firebase nem a publicação d
 | `index.html` | Layout, identidade visual e estilos (sem etapa de build) |
 | `app.js` | Telas, regras de negócio e camada de dados `DB` (hoje: demonstração) |
 | `assets/` | Logotipo original da Masters e ícones |
-| `supabase/migrations/001_init.sql` | Esquema PostgreSQL com RLS, auditoria, última km e funções de uso |
+| `cloud.js`, `config.js` | Conexão com o Supabase (somente chave pública) |
+| `manifest.webmanifest`, `sw.js` | Instalação na tela inicial; o service worker nunca guarda dados do banco |
+| `supabase/migrations/` | 001 esquema/RLS/auditoria/última km; 002 permissões de gatilhos; 003 primeiro acesso; 004 importação só pelo administrador |
+| `supabase/functions/usuarios` | Criação de usuários e redefinição de senha (chave secreta só no servidor) |
 | `supabase/teste_regras.sql` | Teste das regras (executado em Postgres local: todas passaram) |
 
-Bibliotecas por CDN: Chart.js 4.4.1 (gráficos) e SheetJS 0.18.5 (Excel).
+Bibliotecas por CDN: Chart.js 4.4.1, SheetJS 0.18.5, JSZip 3.10.1 e supabase-js 2.45.4.
 
 ## Regras implementadas
 
@@ -33,14 +35,16 @@ Bibliotecas por CDN: Chart.js 4.4.1 (gráficos) e SheetJS 0.18.5 (Excel).
 - Liberação administrativa exige confirmação e justificativa, e fica na auditoria.
 - Última km = maior km de chegada entre as viagens de todos os usuários do veículo; nunca retrocede. Viagem nova não pode começar abaixo dela. Lacunas e retrocessos aparecem em "Precisa de atenção" sem alterar os registros originais.
 - Idempotência: cada formulário tem um ID único (clique repetido, recarga ou reenvio não duplicam). Abastecimento com mesmo veículo, data, hora e valor é recusado.
-- Importação no **mesmo layout do sistema anterior**: CSV do "Exportar CSV" (`;`, seções de viagens e abastecimentos) e planilha "Controle de Utilização Veículo" (viagens nas linhas 4–22; abastecimentos na coluna ABASTECIMENTO como `dd/mm/aaaa — hh:mm — N litros — R$ V.`; vários arquivos "parteN" de uma vez). Validado com uma planilha real do Fiat Mobi: 12 viagens e 7 abastecimentos reconhecidos. Prévia com novos, existentes, duplicados, conflitantes e rejeitados; nada é gravado sem confirmação.
+- Importação (menu Administração → Importação, só MASTERS) no **mesmo layout do sistema anterior**: CSV do "Exportar CSV" (`;`, seções de viagens e abastecimentos) e planilha "Controle de Utilização Veículo" (viagens a partir da linha 4; abastecimentos na coluna ABASTECIMENTO como `dd/mm/aaaa — hh:mm — N litros — R$ V.`; vários arquivos "parteN" de uma vez).
+  - Escolha: viagens e abastecimentos, só viagens ou só abastecimentos.
+  - Antes da prévia, o app carrega do banco todo o período coberto pelo arquivo, e a duplicidade é conferida contra o histórico inteiro (não só os últimos 90 dias).
+  - Prévia com novos, existentes, duplicados, conflitantes e rejeitados, e o funcionário vinculado a cada registro (por USUÁRIO, nome completo ou primeiro nome único). Sem correspondência, o registro fica com o administrador e o texto original é mantido.
+  - Nada é gravado sem confirmação; registros existentes nunca são sobrescritos. Cada registro leva `chave_import` única, gravada com `on conflict do nothing`: reimportar o mesmo arquivo não duplica. O resultado mostra gravados, ignorados e erros.
+  - O texto da coluna ABASTECIMENTO não tem km, posto nem combustível; esses campos ficam vazios/"Outro", sem dados inventados.
 - Exportação: Excel preenchendo a própria planilha-modelo `assets/modelo-diario-de-bordo.xlsx` (formatação preservada, 19 linhas por arquivo, nome `diario-bordo-inicio_fim-PLACA-parteN.xlsx`), CSV reimportável no layout antigo e PDF (impressão do navegador).
 
-## Pendências (Prioridade 2 — consolidação)
+## Pendências
 
-1. ~~Projeto Supabase exclusivo~~ criado (conta e org `diario-bordo-masters`, plano Free) e esquema aplicado; RLS testada no banco com usuários simulados (2026-11-25).
-2. Acesso só por nome de usuário e senha (sem e-mail para o usuário): o MASTERS é configurado na tela "Primeiro acesso" com o código de configuração; depois ele cria os funcionários e redefine senhas pelo app (função de servidor `supabase/functions/usuarios`, que guarda a chave secreta só no servidor). Internamente o Supabase Auth usa `usuario@diario.masters`, nunca exibido.
-3. Cadastrar veículos e alocações pelo próprio app (MASTERS) e testar login real em celular e computador.
-4. Edição de registros próprios e correção administrativa com auditoria.
-5. Importação histórica do sistema anterior (depende de exportação/backup do Firebase).
-6. Homologação e publicação definitiva; a troca do sistema antigo só com aprovação.
+1. Importação histórica real: aguardando os arquivos originais (todas as partes por veículo e/ou CSV exportado do sistema anterior). Só é gravada após conferência da prévia.
+2. Edição de registros próprios e correção administrativa com auditoria.
+3. Homologação; a troca do sistema antigo só com aprovação.

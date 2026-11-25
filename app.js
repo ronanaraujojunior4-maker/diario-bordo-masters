@@ -756,8 +756,18 @@ function csvLer(txt) { // mesmo parser do sistema anterior: separador ";", aspas
 const impData = v => { if (typeof v === 'number') { const d = new Date(Math.round((v - 25569) * 864e5)); return d.toISOString().slice(0, 10); } v = String(v || '').trim(); if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v; const m = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/); return m ? `${m[3].length === 2 ? '20' + m[3] : m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` : ''; };
 const impNum = v => { if (typeof v === 'number') return v; v = String(v ?? '').trim(); if (!v) return null; if (v.includes(',')) v = v.replace(/\./g, '').replace(',', '.'); const n = Number(v); return Number.isFinite(n) ? n : null; };
 const impHora = v => { if (typeof v === 'number') { const m = Math.round(v * 1440) % 1440; return `${pad(Math.floor(m / 60))}:${pad(m % 60)}`; } return String(v ?? '').trim(); };
-const chaveViagem = (r, placa) => [npl(placa), r.data, r.km_saida, r.km_chegada, r.hora_saida, r.hora_chegada, r.origem_destino, r.motorista].join('|').toLowerCase();
-const chaveAb = (a, placa) => [npl(placa), a.data, a.hora, a.km ?? '', a.posto, a.total].join('|').toLowerCase();
+const hhmm = h => { const m = String(h ?? '').trim().match(/^(\d{1,2}):(\d{2})/); return m ? m[1].padStart(2, '0') + ':' + m[2] : String(h ?? '').trim(); };
+const numK = v => v == null || v === '' ? '' : String(Number(v));
+const chaveViagem = (r, placa) => [npl(placa), r.data, numK(r.km_saida), numK(r.km_chegada), hhmm(r.hora_saida), hhmm(r.hora_chegada), String(r.origem_destino ?? '').trim(), String(r.motorista ?? '').trim()].join('|').toLowerCase();
+const chaveAb = (a, placa) => [npl(placa), a.data, hhmm(a.hora), numK(a.km), String(a.posto ?? '').trim(), numK(a.total)].join('|').toLowerCase();
+function acharUsuario(rec) { // vincula ao funcionário pelo USUÁRIO, pelo nome completo ou pelo primeiro nome (somente se for único)
+  const U = DB.d.users.filter(u => u.papel !== 'admin' && u.ativo !== false);
+  const ut = npl(String(rec.usuario_texto || '').split('@')[0]), mo = npl(rec.motorista), p1 = npl(String(rec.motorista || '').trim().split(/\s+/)[0]);
+  if (ut) { const u = U.find(u => u.usuario === ut); if (u) return u; }
+  if (mo) { const u = U.find(u => npl(u.nome) === mo || u.usuario === mo); if (u) return u; }
+  if (p1.length >= 3) { const c = U.filter(u => u.usuario === p1 || npl(String(u.nome).split(/\s+/)[0]) === p1); if (c.length === 1) return c[0]; }
+  return null;
+}
 
 function parseCsvAntigo(text) {
   const rows = csvLer(text.replace(/^﻿/, '')); let sec = 'v'; const V = [], A = [], rej = [];
@@ -770,8 +780,8 @@ function parseCsvAntigo(text) {
       V.push({ ln, veiculo: c[0], placa: c[1], data: impData(c[2]), km_saida: impNum(c[3]), km_chegada: impNum(c[4]), hora_saida: c[5], hora_chegada: c[6], origem_destino: c[7], motorista: c[8], visto: /^(OK|SIM|TRUE|1)$/i.test(c[9]), finalidade: c[10], usuario_texto: c[11] });
     } else {
       if (c.length < 10) return rej.push({ ln, tipo: 'Abastecimento', motivo: 'Linha com menos de 10 colunas', raw: c.join(' | ') });
-      const m = (c[11] || '').toLowerCase();
-      A.push({ ln, veiculo: c[0], placa: c[1], data: impData(c[2]), hora: c[3], km: impNum(c[4]), posto: c[5], combustivel: c[6] || 'Outro', litros: impNum(c[7]), preco_litro: impNum(c[8]), total: impNum(c[9]), obs: c[10] || '', modalidade: m.includes('requisição') ? 'req' : m.includes('funcionário') ? 'func' : 'avulso' });
+      const m = (c[11] || '').toLowerCase(), cb = ['Gasolina', 'Etanol', 'Diesel', 'GNV', 'Outro'].find(x => npl(c[6]).startsWith(npl(x))) || 'Outro', cbObs = c[6] && npl(c[6]) !== npl(cb) ? `Combustível no arquivo: ${c[6]}` : '';
+      A.push({ ln, veiculo: c[0], placa: c[1], data: impData(c[2]), hora: c[3], km: impNum(c[4]), posto: c[5], combustivel: cb, litros: impNum(c[7]), preco_litro: impNum(c[8]), total: impNum(c[9]), obs: [c[10], cbObs].filter(Boolean).join(' · '), modalidade: m.includes('requisição') ? 'req' : m.includes('funcionário') ? 'func' : 'avulso' });
     }
   });
   return { V, A, rej };
@@ -784,27 +794,33 @@ function parseXlsxModelo(wb) { // planilha "Controle de Utilização Veículo": 
     const veiculo = String(g[1]?.[0] || '').replace(/^Ve[ií]culo:\s*/i, '').trim(), placa = String(g[1]?.[2] || '').replace(/^Placa:\s*/i, '').trim();
     const hi = g.findIndex(r => String(r[0]).trim().toUpperCase() === 'DATA'); if (hi < 0) { rej.push({ ln: '-', tipo: 'Planilha', motivo: `Aba "${nm}" sem cabeçalho DATA / KM SAÍDA`, raw: '' }); continue; }
     for (let i = hi + 1; i < g.length; i++) {
-      const r = g[i], ln = `${nm}!${i + 1}`, jt = String(r[9] ?? '').trim();
+      const r = g[i], ln = `${nm}!${i + 1}`, jt = String(r[9] ?? '').trim(), a0 = A.length;
       if (jt) { let m, ok = 0; RX_AB.lastIndex = 0;
         while ((m = RX_AB.exec(jt))) { ok++; const litros = impNum(m[3]), total = impNum(m[4]); A.push({ ln: ln + ' (J)', veiculo, placa, data: impData(m[1]), hora: m[2].padStart(5, '0'), km: null, posto: '', combustivel: 'Outro', litros, preco_litro: litros > 0 ? Math.round(total / litros * 1000) / 1000 : null, total, obs: 'Importado da coluna ABASTECIMENTO', modalidade: 'avulso' }); }
         if (!ok) rej.push({ ln: ln + ' (J)', tipo: 'Abastecimento', motivo: 'Texto fora do padrão "dd/mm/aaaa — hh:mm — N litros — R$ V."', raw: jt });
       }
       if (!r.slice(0, 9).some(x => String(x).trim())) continue;
       const data = impData(r[0]); if (!data && (String(r[1]).trim() === '' || impNum(r[1]) == null)) continue; // linhas de total/observação
+      for (let j = a0; j < A.length; j++) A[j].tripLn = ln;
       V.push({ ln, veiculo, placa, data, km_saida: impNum(r[1]), km_chegada: impNum(r[2]), hora_saida: impHora(r[3]), hora_chegada: impHora(r[4]), origem_destino: String(r[5]).trim(), motorista: String(r[6]).trim(), visto: /^(OK|SIM|X|TRUE|1)$/i.test(String(r[7]).trim()), finalidade: String(r[8]).trim(), usuario_texto: '' });
     }
   }
   return { V, A, rej };
 }
-function classify({ V, A, rej }) {
+function classify({ V, A, rej }, modo = 'tudo') {
   const byPl = p => DB.d.vehicles.find(v => npl(v.placa) === npl(p)), out = [];
-  const exT = new Set(DB.d.trips.map(t => chaveViagem(t, DB.veh(t.vehicle_id).placa))), exA = new Set(DB.d.fuelings.map(a => chaveAb(a, DB.veh(a.vehicle_id).placa))), seen = new Set();
+  const exT = new Set(), exA = new Set(), seen = new Set();
+  DB.d.trips.forEach(t => { exT.add(chaveViagem(t, DB.veh(t.vehicle_id)?.placa)); if (t.chave_import) exT.add(t.chave_import); });
+  DB.d.fuelings.forEach(a => { exA.add(chaveAb(a, DB.veh(a.vehicle_id)?.placa)); if (a.chave_import) exA.add(a.chave_import); });
+  if (modo === 'v') { A = []; rej = rej.filter(r => r.tipo !== 'Abastecimento'); }
+  if (modo === 'a') { V = V.filter(r => A.some(a => a.tripLn === r.ln)); rej = rej.filter(r => r.tipo !== 'Viagem'); }
   rej.forEach(r => out.push({ ...r, st: 'rejeitado' }));
   for (const r of V) {
     const v = byPl(r.placa) || DB.d.vehicles.find(x => !npl(r.placa) && npl(x.nome) === npl(r.veiculo)); const base = { ln: r.ln, tipo: 'Viagem', raw: `${r.placa || r.veiculo} · ${fd(r.data)} · ${r.km_saida ?? '?'} → ${r.km_chegada ?? '?'} · ${r.origem_destino}`, rec: r, v };
     if (!r.data) { out.push({ ...base, st: 'rejeitado', motivo: 'Data inválida' }); continue; }
     if (r.km_saida == null || r.km_chegada == null) { out.push({ ...base, st: 'rejeitado', motivo: 'KM de saída ou chegada ausente' }); continue; }
     if (r.km_chegada < r.km_saida) { out.push({ ...base, st: 'rejeitado', motivo: 'KM de chegada menor que a de saída' }); continue; }
+    if ([r.hora_saida, r.hora_chegada].some(h => h && !/^\d{1,2}:\d{2}/.test(h))) { out.push({ ...base, st: 'rejeitado', motivo: 'Hora fora do formato hh:mm' }); continue; }
     if (!v) { out.push({ ...base, st: 'conflitante', motivo: `Placa "${r.placa}" sem veículo cadastrado. Cadastre o veículo antes de importar.` }); continue; }
     const k = chaveViagem(r, v.placa);
     if (exT.has(k)) { out.push({ ...base, st: 'existente', motivo: 'Já está no sistema' }); continue; }
@@ -814,22 +830,30 @@ function classify({ V, A, rej }) {
     if (sem) { out.push({ ...base, st: 'conflitante', motivo: `Já existe viagem deste veículo em ${fd(r.data)} saindo com ${nf(r.km_saida)} km, com dados diferentes.` }); continue; }
     out.push({ ...base, st: 'novo', motivo: 'Será importada' });
   }
+  if (modo === 'a') { const lv = new Map(out.filter(r => r.tipo === 'Viagem').map(r => [r.ln, r])); out.length = 0; rej.forEach(r => out.push({ ...r, st: 'rejeitado' })); S._tripRows = lv; } else S._tripRows = new Map(out.filter(r => r.tipo === 'Viagem').map(r => [r.ln, r]));
   for (const a of A) {
-    const v = byPl(a.placa), base = { ln: a.ln, tipo: 'Abastecimento', raw: `${a.placa} · ${fd(a.data)} ${a.hora} · ${a.posto} · ${a.total != null ? brl(a.total) : '?'}`, rec: a, v };
+    const tr = a.tripLn ? S._tripRows.get(a.tripLn) : null;
+    const v = byPl(a.placa), base = { ln: a.ln, tipo: 'Abastecimento', raw: `${a.placa} · ${fd(a.data)} ${a.hora}${a.km != null ? ' · ' + nf(a.km) + ' km' : ''}${a.posto ? ' · ' + a.posto : ''} · ${a.total != null ? brl(a.total) : '?'} · ${a.litros ?? '?'} L`, rec: a, v, trip: tr && tr.v ? { key: chaveViagem(tr.rec, tr.v.placa), rec: tr.rec, st: tr.st } : null };
     if (!a.data) { out.push({ ...base, st: 'rejeitado', motivo: 'Data inválida' }); continue; }
+    if (!/^\d{1,2}:\d{2}/.test(a.hora || '')) { out.push({ ...base, st: 'rejeitado', motivo: 'Hora ausente ou fora do formato hh:mm' }); continue; }
     if (!(a.total > 0) || !(a.preco_litro > 0) || !(a.litros > 0)) { out.push({ ...base, st: 'rejeitado', motivo: 'Valor, preço ou litros inválidos' }); continue; }
     if (!v) { out.push({ ...base, st: 'conflitante', motivo: `Placa "${a.placa}" sem veículo cadastrado.` }); continue; }
     const k = chaveAb(a, v.placa);
     if (exA.has(k)) { out.push({ ...base, st: 'existente', motivo: 'Já está no sistema' }); continue; }
     if (seen.has(k)) { out.push({ ...base, st: 'duplicado', motivo: 'Repetido dentro do arquivo' }); continue; }
-    seen.add(k); out.push({ ...base, st: 'novo', motivo: 'Será importado' });
+    seen.add(k); out.push({ ...base, st: 'novo', motivo: 'Será importado' + (base.trip ? ' e ligado à viagem da mesma linha' : '') });
   }
+  out.forEach(r => { if (r.rec) r.u = acharUsuario(r.tipo === 'Viagem' ? r.rec : r.trip?.rec || {}); });
   return out;
 }
 const ST = { novo: ['p-ok', 'Novo'], existente: ['p-mute', 'Existente'], duplicado: ['p-cyan', 'Duplicado'], conflitante: ['p-warn', 'Conflitante'], rejeitado: ['p-crit', 'Rejeitado'] };
+const imp1 = () => { const P = S.importPreview; if (P) P.rows = classify(P.parsed, S.impModo || 'tudo'); };
 function rImportacao() {
-  const P = S.importPreview, cnt = k => P ? P.rows.filter(r => r.st === k).length : 0;
+  const P = S.importPreview, R = S.importResult, cnt = (k, t) => P ? P.rows.filter(r => r.st === k && (!t || r.tipo === t)).length : 0;
+  const semResp = P ? P.rows.filter(r => r.st === 'novo' && !r.u).length : 0, ondeGrava = window.CLOUD ? 'no <b>banco oficial</b>' : 'na <b>base de demonstração</b>';
   afterRender.importacao = () => {
+    $$('input[name=imp-modo]').forEach(i => i.onchange = () => { S.impModo = i.value; imp1(); route(); });
+    $('#imp-res-x')?.addEventListener('click', () => { S.importResult = null; route(); });
     $('#imp-file').onchange = async e => {
       const fs = [...(e.target.files || [])]; e.target.value = ''; if (!fs.length) return;
       try {
@@ -837,13 +861,15 @@ function rImportacao() {
         for (const f of fs) {
           const p = /\.xlsx?$/i.test(f.name) ? (window.XLSX ? parseXlsxModelo(XLSX.read(await f.arrayBuffer(), { type: 'array' })) : (() => { throw Error('Leitor de Excel indisponível sem conexão.'); })()) : parseCsvAntigo(await f.text());
           const tag = fs.length > 1 ? f.name.replace(/\.\w+$/, '') + ' · ' : '';
-          ['V', 'A', 'rej'].forEach(k => p[k].forEach(r => parsed[k].push({ ...r, ln: tag + r.ln })));
+          ['V', 'A', 'rej'].forEach(k => p[k].forEach(r => parsed[k].push({ ...r, ln: tag + r.ln, tripLn: r.tripLn ? tag + r.tripLn : undefined })));
         }
         if (!parsed.V.length && !parsed.A.length && !parsed.rej.length) throw Error('Não encontrei viagens ou abastecimentos no layout do Diário de Bordo.');
-        S.importPreview = { nome: fs.length > 1 ? `${fs.length} arquivos` : fs[0].name, rows: classify(parsed) }; route();
+        const datas = [...parsed.V, ...parsed.A].map(r => r.data).filter(Boolean).sort();
+        if (window.CLOUD && datas.length) { toast('Conferindo com o histórico do banco…'); await CLOUD.ensureSince(datas[0]); } // duplicidade contra todo o período do arquivo, não só os últimos 90 dias
+        S.importResult = null; S.importPreview = { nome: fs.length > 1 ? `${fs.length} arquivos` : fs[0].name, parsed }; imp1(); route();
       } catch (x) { toast(x.message); }
     };
-    $('#imp-ok')?.addEventListener('click', () => dialog(`<div class="dh"><h2>Confirmar importação?</h2></div><div class="dialog-body"><p>Serão gravados <b>${cnt('novo')}</b> registros novos na <b>base de demonstração</b>. Existentes, duplicados, conflitantes e rejeitados não serão gravados.</p></div><div class="dialog-foot"><button class="btn sec" id="c">Cancelar</button><button class="btn" id="o">Importar</button></div>`, d => { $('#c', d).onclick = closeDlg; $('#o', d).onclick = async () => { closeDlg(); try { await doImport(); } catch (x) { toast(x.message); } }; }));
+    $('#imp-ok')?.addEventListener('click', () => dialog(`<div class="dh"><h2>Confirmar importação?</h2></div><div class="dialog-body"><p>Serão gravados ${ondeGrava}: <b>${cnt('novo', 'Viagem')}</b> viagens e <b>${cnt('novo', 'Abastecimento')}</b> abastecimentos novos.</p><p>Existentes, duplicados, conflitantes e rejeitados <b>não</b> serão gravados nem alterados. Nenhum registro existente é sobrescrito.</p>${semResp ? `<div class="msg warn">${semResp} registro(s) sem funcionário correspondente ficarão vinculados ao administrador (importação). Veículo, motorista e demais dados do arquivo são preservados.</div>` : ''}</div><div class="dialog-foot"><button class="btn sec" id="c">Cancelar</button><button class="btn" id="o">Importar</button></div>`, d => { $('#c', d).onclick = closeDlg; $('#o', d).onclick = async () => { closeDlg(); toast('Gravando…'); try { S.importResult = await doImport(); } catch (x) { S.importResult = { erros: [x.message], tv: 0, ta: 0, iv: 0, ia: 0 }; } S.importPreview = null; route(); }; }));
     $('#imp-cancel')?.addEventListener('click', () => { S.importPreview = null; route(); });
   };
   return `<section class="card"><header><h2>Importar arquivo do Diário de Bordo</h2></header>
@@ -852,26 +878,31 @@ function rImportacao() {
         <p style="margin:0">Aceita os mesmos arquivos do sistema anterior, sem mudar o formato:</p>
         <ul style="margin:0;padding-left:18px;display:grid;gap:4px"><li><b>CSV</b> gerado em "Exportar CSV" (separador ponto e vírgula, seções de viagens e de abastecimentos).</li><li><b>Planilha Excel</b> "Controle de Utilização Veículo" (veículo em A2, placa em C2, cabeçalho DATA / KM SAÍDA na linha 3, viagens nas linhas seguintes e abastecimentos na coluna ABASTECIMENTO no formato "dd/mm/aaaa — hh:mm — N litros — R$ V."). Pode enviar vários arquivos de uma vez (partes 1, 2, 3…).</li></ul>
         <p class="muted" style="margin:0;font-size:12px">Nada é gravado antes da sua confirmação. Duplicidade é verificada pela mesma chave do sistema anterior: placa, data, km de saída e chegada, horários, origem/destino e motorista.</p>
-        <label class="btn" style="justify-self:start">${ico('upload')}Selecionar arquivo<input id="imp-file" type="file" multiple accept=".csv,.xlsx,.xls,text/csv" hidden></label>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;font-size:14px"><span class="muted" style="font-weight:600">Importar:</span>${[['tudo', 'Viagens e abastecimentos'], ['v', 'Só viagens'], ['a', 'Só abastecimentos']].map(([k, l]) => `<label class="check"><input type="radio" name="imp-modo" value="${k}" ${(S.impModo || 'tudo') === k ? 'checked' : ''}> ${l}</label>`).join('')}</div>
+        <label class="btn" style="justify-self:start">${ico('upload')}Selecionar arquivo(s)<input id="imp-file" type="file" multiple accept=".csv,.xlsx,.xls,text/csv" hidden></label>
       </div>
       <div class="tw"><table><thead><tr><th>Seção</th><th>Colunas preservadas</th></tr></thead><tbody>
         <tr><td>Viagens</td><td style="font-size:12px">Veículo; Placa; DATA; KM SAÍDA; KM CHEGADA; HORA SAÍDA; HORA CHEGADA; ORIGEM / DESTINO; NOME MOTORISTA (legível); VISTO MOTORISTA; FINALIDADE; USUÁRIO; KM RODADO</td></tr>
         <tr><td>Abastecimentos</td><td style="font-size:12px">Veículo; Placa; Data; Hora; KM; Posto; Combustível; Litros; R$/litro; Total; Obs.; Modalidade</td></tr>
         <tr><td>Planilha</td><td style="font-size:12px">DATA, KM SAÍDA, KM CHEGADA, HORA SAÍDA, HORA CHEGADA, ORIGEM / DESTINO, NOME MOTORISTA, VISTO MOTORISTA, FINALIDADE, ABASTECIMENTO</td></tr></tbody></table></div>
     </div></section>
+  ${R ? `<section class="card"><header><h2>Resultado da importação</h2><span class="grow"></span><button class="btn sec sm" id="imp-res-x">Fechar</button></header>
+    <div class="kpis" style="margin-bottom:10px"><div class="kpi"><span class="k">Viagens gravadas</span><span class="v">${R.tv}</span></div><div class="kpi"><span class="k">Abastecimentos gravados</span><span class="v">${R.ta}</span></div><div class="kpi"><span class="k">Ignorados (já existiam)</span><span class="v">${R.iv + R.ia}</span></div><div class="kpi"><span class="k">Erros</span><span class="v">${R.erros.length}</span></div></div>
+    ${R.erros.length ? `<div class="msg err"><div>${R.erros.map(esc).join('<br>')}</div></div>` : '<div class="msg ok">Importação concluída sem erros. Reimportar o mesmo arquivo não duplica registros.</div>'}</section>` : ''}
   ${P ? `<section class="card"><header><h2>Prévia · ${esc(P.nome)}</h2><span class="grow"></span><button class="btn sec" id="imp-cancel">Descartar</button><button class="btn" id="imp-ok" ${cnt('novo') ? '' : 'disabled'}>${ico('check')}Importar ${cnt('novo')} novos</button></header>
     <div class="kpis" style="margin-bottom:14px">${Object.entries(ST).map(([k, [c, l]]) => `<div class="kpi"><span class="k"><span class="pill ${c}">${l}</span></span><span class="v">${cnt(k)}</span></div>`).join('')}</div>
-    ${table([{ h: 'Linha', f: r => `<span class="mono">${esc(r.ln)}</span>` }, { h: 'Tipo', f: r => esc(r.tipo) }, { h: 'Situação', f: r => `<span class="pill ${ST[r.st][0]}">${ST[r.st][1]}</span>` }, { h: 'Registro', f: r => esc(r.raw) }, { h: 'Motivo', f: r => esc(r.motivo) }], P.rows)}</section>` : ''}`;
+    ${P.rows.some(r => r.tipo === 'Abastecimento' && /\(J\)/.test(r.ln)) ? '<div class="msg info" style="margin-bottom:10px">Abastecimentos da coluna ABASTECIMENTO da planilha trazem só data, hora, litros e valor. KM, posto e combustível não existem nesse texto e ficam em branco ("Outro"), sem dados inventados.</div>' : ''}
+    ${table([{ h: 'Linha', f: r => `<span class="mono">${esc(r.ln)}</span>` }, { h: 'Tipo', f: r => esc(r.tipo) }, { h: 'Situação', f: r => `<span class="pill ${ST[r.st][0]}">${ST[r.st][1]}</span>` }, { h: 'Registro', f: r => esc(r.raw) }, { h: 'Responsável', f: r => r.st !== 'novo' ? '' : r.u ? esc(r.u.nome) : '<span class="pill p-warn">sem correspondência</span>' }, { h: 'Motivo', f: r => esc(r.motivo) }], P.rows)}</section>` : ''}`;
 }
 function doImport() {
-  const P = S.importPreview; let nv = 0, na = 0;
-  for (const r of P.rows.filter(x => x.st === 'novo')) {
-    const u = DB.d.users.find(x => x.usuario === npl(r.rec.usuario_texto) || npl(x.nome) === npl(r.rec.motorista));
-    if (r.tipo === 'Viagem') { DB.d.trips.push({ id: uid(), vehicle_id: r.v.id, user_id: u?.id || null, data: r.rec.data, hora_saida: r.rec.hora_saida, hora_chegada: r.rec.hora_chegada, km_saida: r.rec.km_saida, km_chegada: r.rec.km_chegada, origem_destino: r.rec.origem_destino, motorista: r.rec.motorista, finalidade: r.rec.finalidade, visto: r.rec.visto, usuario_texto: r.rec.usuario_texto, origem: 'importacao', criado_em: new Date().toISOString() }); nv++; }
-    else { DB.d.fuelings.push({ id: uid(), vehicle_id: r.v.id, user_id: u?.id || null, trip_id: null, data: r.rec.data, hora: r.rec.hora, km: r.rec.km, posto: r.rec.posto, combustivel: r.rec.combustivel, litros: r.rec.litros, preco_litro: r.rec.preco_litro, total: r.rec.total, modalidade: r.rec.modalidade, obs: r.rec.obs, origem: 'importacao', criado_em: new Date().toISOString() }); na++; }
+  const P = S.importPreview; let nv = 0, na = 0; const ids = new Map(DB.d.trips.map(t => [t.chave_import || chaveViagem(t, DB.veh(t.vehicle_id)?.placa), t.id]));
+  for (const r of [...P.rows.filter(x => x.st === 'novo' && x.tipo === 'Viagem'), ...P.rows.filter(x => x.st === 'novo' && x.tipo !== 'Viagem')]) {
+    const u = r.u;
+    if (r.tipo === 'Viagem') { const id = uid(); ids.set(chaveViagem(r.rec, r.v.placa), id); DB.d.trips.push({ id, chave_import: chaveViagem(r.rec, r.v.placa), vehicle_id: r.v.id, user_id: u?.id || null, data: r.rec.data, hora_saida: r.rec.hora_saida, hora_chegada: r.rec.hora_chegada, km_saida: r.rec.km_saida, km_chegada: r.rec.km_chegada, origem_destino: r.rec.origem_destino, motorista: r.rec.motorista, finalidade: r.rec.finalidade, visto: r.rec.visto, usuario_texto: r.rec.usuario_texto, origem: 'importacao', criado_em: new Date().toISOString() }); nv++; }
+    else { DB.d.fuelings.push({ id: uid(), chave_import: chaveAb(r.rec, r.v.placa), vehicle_id: r.v.id, user_id: u?.id || null, trip_id: r.trip ? ids.get(r.trip.key) || null : null, data: r.rec.data, hora: r.rec.hora, km: r.rec.km, posto: r.rec.posto, combustivel: r.rec.combustivel, litros: r.rec.litros, preco_litro: r.rec.preco_litro, total: r.rec.total, modalidade: r.rec.modalidade, obs: r.rec.obs, origem: 'importacao', criado_em: new Date().toISOString() }); na++; }
   }
   DB.audit('IMPORTACAO', 'importacao', '', `${P.nome}: ${nv} viagens e ${na} abastecimentos importados; ${P.rows.length - nv - na} não gravados.`); DB.save();
-  S.importPreview = null; toast(`Importação concluída: ${nv} viagens e ${na} abastecimentos.`); route();
+  toast(`Importação concluída: ${nv} viagens e ${na} abastecimentos.`); return { tv: nv, ta: na, iv: 0, ia: 0, erros: [] };
 }
 
 /* ───────────── Auditoria ───────────── */
@@ -882,6 +913,7 @@ function rAuditoria() {
 }
 
 /* ───────────── Início ───────────── */
+if ('serviceWorker' in navigator && location.protocol === 'https:' && window.top === window) navigator.serviceWorker.register('sw.js').catch(() => { });
 (async function boot() {
   if (window.CLOUD) { // modo oficial: aguarda a verificação da sessão antes de decidir entre login e aplicativo
     $('#demoBand').hidden = true;

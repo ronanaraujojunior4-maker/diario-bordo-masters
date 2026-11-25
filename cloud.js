@@ -95,17 +95,26 @@
         }
         await recarregar();
       };
-      window.doImport = async () => {
-        const P = S.importPreview, novos = P.rows.filter(x => x.st === 'novo'), T = [], A = [];
-        for (const r of novos) {
-          const u = DB.d.users.find(x => x.papel !== 'admin' && (x.usuario === npl(r.rec.usuario_texto) || npl(x.nome) === npl(r.rec.motorista)));
-          const base = { id: uid(), vehicle_id: r.v.id, user_id: u?.id || S.user.id, origem: 'importacao' };
-          if (r.tipo === 'Viagem') T.push({ ...base, data: r.rec.data, hora_saida: r.rec.hora_saida || null, hora_chegada: r.rec.hora_chegada || null, km_saida: r.rec.km_saida, km_chegada: r.rec.km_chegada, origem_destino: r.rec.origem_destino, motorista: r.rec.motorista, finalidade: r.rec.finalidade || null, visto: r.rec.visto, usuario_texto: r.rec.usuario_texto || null, chave_import: chaveViagem(r.rec, r.v.placa) });
-          else A.push({ ...base, data: r.rec.data, hora: r.rec.hora, km: r.rec.km, posto: r.rec.posto || null, combustivel: r.rec.combustivel, litros: r.rec.litros, preco_litro: r.rec.preco_litro, total: r.rec.total, modalidade: r.rec.modalidade, obs: r.rec.obs || null, chave_import: chaveAb(r.rec, r.v.placa) });
+      window.doImport = async () => { // grava só os "novos"; chave_import única + ignoreDuplicates: reimportar nunca duplica nem sobrescreve
+        const P = S.importPreview, ok = P.rows.filter(x => x.st === 'novo'), T = [], A = [], R = { tv: 0, ta: 0, iv: 0, ia: 0, erros: [] };
+        const ids = new Map(); DB.d.trips.forEach(t => { const k = t.chave_import || chaveViagem(t, DB.veh(t.vehicle_id)?.placa); ids.set(k, t.id); });
+        for (const r of ok) {
+          const base = { id: uid(), vehicle_id: r.v.id, user_id: r.u?.id || S.user.id, origem: 'importacao' };
+          if (r.tipo === 'Viagem') T.push({ ...base, data: r.rec.data, hora_saida: r.rec.hora_saida || null, hora_chegada: r.rec.hora_chegada || null, km_saida: r.rec.km_saida, km_chegada: r.rec.km_chegada, origem_destino: r.rec.origem_destino || '', motorista: r.rec.motorista || '', finalidade: r.rec.finalidade || null, visto: !!r.rec.visto, usuario_texto: r.rec.usuario_texto || null, chave_import: chaveViagem(r.rec, r.v.placa) });
+          else A.push({ r, row: { ...base, data: r.rec.data, hora: r.rec.hora, km: r.rec.km, posto: r.rec.posto || null, combustivel: r.rec.combustivel, litros: r.rec.litros, preco_litro: r.rec.preco_litro, total: r.rec.total, modalidade: r.rec.modalidade, obs: r.rec.obs || null, chave_import: chaveAb(r.rec, r.v.placa) } });
         }
-        for (let i = 0; i < T.length; i += 500) must(await sb.from('trips').upsert(T.slice(i, i + 500), { onConflict: 'chave_import', ignoreDuplicates: true }));
-        for (let i = 0; i < A.length; i += 500) must(await sb.from('fuelings').upsert(A.slice(i, i + 500), { onConflict: 'chave_import', ignoreDuplicates: true }));
-        S.importPreview = null; await carregar(since); toast(`Importação concluída: ${T.length} viagens e ${A.length} abastecimentos.`); route();
+        for (let i = 0; i < T.length; i += 200) {
+          const lote = T.slice(i, i + 200), { data, error } = await sb.from('trips').upsert(lote, { onConflict: 'chave_import', ignoreDuplicates: true }).select('id,chave_import');
+          if (error) { R.erros.push(`Viagens ${i + 1}–${i + lote.length}: ${traduz(error.message)}`); continue; }
+          R.tv += data.length; R.iv += lote.length - data.length; data.forEach(d => ids.set(d.chave_import, d.id));
+        }
+        const F = A.map(({ r, row }) => ({ ...row, trip_id: r.trip ? ids.get(r.trip.key) || null : null }));
+        for (let i = 0; i < F.length; i += 200) {
+          const lote = F.slice(i, i + 200), { data, error } = await sb.from('fuelings').upsert(lote, { onConflict: 'chave_import', ignoreDuplicates: true }).select('id');
+          if (error) { R.erros.push(`Abastecimentos ${i + 1}–${i + lote.length}: ${traduz(error.message)}`); continue; }
+          R.ta += data.length; R.ia += lote.length - data.length;
+        }
+        await carregar(since); return R;
       };
     },
   };
