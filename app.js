@@ -226,7 +226,7 @@ const DB = {
 
 /* ───────────── Estado e sessão ───────────── */
 const S = { user: null, route: 'painel', charts: [], regFilter: '', relTab: 'viagens', rel: { ini: isoDay(addDays(new Date(), -29)), fim: today(), vid: '', uid: '' }, importPreview: null, cadTab: 'veiculos' };
-const APP_VERSAO = '20261125-1830';
+const APP_VERSAO = '20261125-1900';
 const isAdmin = () => S.user?.papel === 'admin';
 const podeOperar = () => !!S.user && (S.user.papel !== 'admin' || !!S.user.opera_veiculos); // funcionário ou administrador que também opera (RONAN)
 const operador = u => u && u.ativo !== false && !u.excluido_em && (u.papel !== 'admin' || u.opera_veiculos); // pode ser responsável/autorizado
@@ -366,7 +366,7 @@ function renderShell() {
       <div class="grp">Operação</div>${main.map(navItem).join('')}
       ${isAdmin() ? `<div class="grp">Administração</div>${adm.map(navItem).join('')}` : ''}
       <div class="foot">
-        <div class="ver muted">Versão 20261125-1830</div>
+        <div class="ver muted">Versão 20261125-1900</div>
         <div class="me"><span class="avatar">${esc(S.user.nome.split(' ').map(p => p[0]).slice(0, 2).join(''))}</span><span class="who"><b>${esc(S.user.nome)}</b><span>${isAdmin() ? (podeOperar() ? 'Administrador e operacional' : 'Administrador') : 'Funcionário'} · ${esc(S.user.usuario)}</span></span></div>
         ${window.CLOUD ? `<button class="lnk" id="mypass" title="Alterar minha senha">${ico('key')}<span class="lbl">Alterar minha senha</span></button>` : ''}
         <button class="lnk" id="collapse" title="Recolher menu">${ico('panel')}<span class="lbl">Recolher menu</span></button>
@@ -524,7 +524,7 @@ function rPainel() {
     $('#k-ciclo')?.addEventListener('click', () => $('#ciclos')?.scrollIntoView({ behavior: 'smooth' }));
     const days = [...Array(30)].map((_, i) => isoDay(addDays(new Date(), i - 29)));
     mkChart('c-km', { type: 'bar', data: { labels: days.map(d => fd(d).slice(0, 5)), datasets: V.map((v, i) => ({ label: v.nome, backgroundColor: VCOL[i % VCOL.length], borderRadius: 3, data: days.map(d => P.T.filter(t => t.data === d && t.vehicle_id === v.id).reduce((s, t) => s + t.km_chegada - t.km_saida, 0)) })) }, options: { maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, usePointStyle: true } }, tooltip: { callbacks: { label: c => `${c.dataset.label}: ${nf(c.raw)} km` } } }, scales: { x: { stacked: true, grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 12 } }, y: { stacked: true, ticks: { callback: v => nf(v) } } } } });
-    mkChart('c-fuel', { type: 'doughnut', data: { labels: V.map(v => v.nome), datasets: [{ data: V.map(v => P.A.filter(a => a.vehicle_id === v.id).reduce((s, a) => s + a.total, 0)), backgroundColor: V.map((_, i) => VCOL[i % VCOL.length]), borderColor: css('--surface'), borderWidth: 3 }] }, options: { maintainAspectRatio: false, cutout: '68%', plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, usePointStyle: true } }, tooltip: { callbacks: { label: c => `${c.label}: ${brl(c.raw)}` } } } } });
+    mkChart('c-fuel', { type: 'doughnut', data: { labels: V.map(v => v.nome), datasets: [{ data: V.map(v => Math.round(P.A.filter(a => a.vehicle_id === v.id).reduce((s, a) => s + Number(a.litros || 0), 0) * 10) / 10), backgroundColor: V.map((_, i) => VCOL[i % VCOL.length]), borderColor: css('--surface'), borderWidth: 3 }] }, options: { maintainAspectRatio: false, cutout: '68%', plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, usePointStyle: true } }, tooltip: { callbacks: { label: c => `${c.label}: ${nf(c.raw, 1)} L` } } } } });
   };
   return `
   ${podeOperar() ? `<div class="msg ${mine ? 'ok' : 'info'} acoes-op">${ico(mine ? 'check' : 'car')}<span>${mine ? `Você está com o <b>${esc(DB.veh(mine.vehicle_id).nome)}</b> desde ${fdt(mine.inicio)}.` : 'Você não está com nenhum veículo. Assuma o veículo sob sua responsabilidade para registrar viagens e abastecimentos.'}</span>
@@ -535,7 +535,7 @@ function rPainel() {
     <div class="kpi" style="--tone:var(--electric)"><span class="k">Em utilização</span><span class="v">${emUso}</span><span class="s">com funcionário agora</span></div>
     <div class="kpi" id="k-ciclo" role="button" tabindex="0" style="cursor:pointer;--tone:var(--cyan)"><span class="k">${ico('route')}Viagens no ciclo</span><span class="v">${CR.length ? nf(cViag) : '—'}</span><span class="s">${CR.length ? 'desde o último abastecimento de cada veículo' : 'Sem referência de abastecimento'}</span></div>
     <div class="kpi" style="--tone:var(--cyan)"><span class="k">Km no ciclo</span><span class="v">${CR.length ? nf(cKm) : '—'}</span><span class="s">${CR.length ? `soma dos ciclos atuais (${CR.length} de ${V.length} veículos)` : 'Sem referência de abastecimento'}</span></div>
-    <div class="kpi" style="--tone:var(--warn)"><span class="k">${ico('fuel')}Combustível</span><span class="v">${brl0(P.tot)}</span><span class="s">${P.A.length} abastecimentos · ${nf(P.lit, 0)} L</span></div>
+    <div class="kpi" style="--tone:var(--warn)"><span class="k">${ico('fuel')}Abastecimentos</span><span class="v">${P.A.length}</span><span class="s">${nf(P.lit, 0)} L nos últimos 30 dias</span></div>
     <div class="kpi" style="--tone:var(--graphite)"><span class="k">Consumo médio</span>${CC.length ? `<span class="v">${nf(cTotKm / cTotL, 1)} km/L</span><span class="s">${nf(cTotKm)} km ÷ ${nf(cTotL, 1)} L · tanque cheio a tanque cheio (${CC.length} de ${V.length} veículos)</span>` : `<span class="v" style="font-size:17px">Dados insuficientes</span><span class="s">precisa de dois abastecimentos com tanque cheio e km informada</span>`}</div>
     <div class="kpi" style="--tone:var(--electric)"><span class="k">${ico('car')}Frota em operação</span><span class="fo"><span><b>${FO.uso}</b>em uso</span><span><b>${FO.disp}</b>disponíveis</span><span><b>${FO.reservados}</b>reservados</span></span><span class="s">${FO.total} veículos ativos</span></div>
   </section>
@@ -546,19 +546,19 @@ function rPainel() {
     <p class="muted" style="font-size:12px;margin:10px 0 0">Consumo médio (tanque cheio a tanque cheio): km percorridos entre os dois últimos abastecimentos com tanque cheio ÷ litros colocados depois do primeiro até o segundo, incluindo abastecimentos parciais no meio. Abastecimentos antigos sem essa informação não entram no cálculo. O total da frota soma km e litros de todos os veículos (não é média de médias). Conflitos de km aparecem no Registro.</p></section>
   <div class="grid g-dash">
     <section class="card"><header><h2>Quilometragem por dia</h2><span class="grow"></span><span class="muted" style="font-size:12px">${fd(ini)} a ${fd(fim)}</span></header><div class="chart-box"><canvas id="c-km" aria-label="Gráfico de km por dia"></canvas></div></section>
-    <section class="card"><header><h2>Gasto com combustível</h2><span class="grow"></span><span class="muted" style="font-size:12px">30 dias</span></header><div class="chart-box"><canvas id="c-fuel" aria-label="Gráfico de gasto por veículo"></canvas></div></section>
+    <section class="card"><header><h2>Litros abastecidos</h2><span class="grow"></span><span class="muted" style="font-size:12px">30 dias, por veículo</span></header><div class="chart-box"><canvas id="c-fuel" aria-label="Gráfico de litros abastecidos por veículo"></canvas></div></section>
   </div>
   <div class="grid g2">
     <section class="card"><header><h2>Resumo da Operação</h2><span class="grow"></span><span class="muted" style="font-size:12px">${esc(mes)}</span></header>
       ${R.emAndamento.length || R.T.length || R.A.length ? `<div class="resumo">
         <div class="ri"><span class="ri-i" style="--tone:var(--electric)">${ico('route')}</span><div><span class="k">Viagens em andamento</span><b class="v">${R.emAndamento.length}</b><span class="s">${R.emAndamento.length ? R.emAndamento.map(x => `${esc(x.v.nome)} · ${esc(DB.user(x.u.user_id)?.nome || '')}`).join('<br>') : 'nenhum veículo assumido agora'}</span></div></div>
-        <div class="ri"><span class="ri-i" style="--tone:var(--warn)">${ico('fuel')}</span><div><span class="k">Abastecimentos no mês</span><b class="v">${R.A.length}</b><span class="s">${R.A.length ? brl(R.totA) : 'nenhum registrado'}</span></div></div>
+        <div class="ri"><span class="ri-i" style="--tone:var(--warn)">${ico('fuel')}</span><div><span class="k">Abastecimentos no mês</span><b class="v">${R.A.length}</b><span class="s">${R.A.length ? nf(R.A.reduce((s, a) => s + Number(a.litros || 0), 0), 1) + ' L' : 'nenhum registrado'}</span></div></div>
         <div class="ri"><span class="ri-i" style="--tone:var(--cyan)">${ico('gauge')}</span><div><span class="k">Quilometragem no mês</span><b class="v">${nf(R.km)} km</b><span class="s">${R.T.length} viagens válidas, sem repetição</span></div></div>
         <div class="ri"><span class="ri-i" style="--tone:var(--ok)">${ico('car')}</span><div><span class="k">Veículo mais utilizado</span><b class="v">${R.top ? esc(R.top.v.nome) : '—'}</b><span class="s">${R.top ? `${esc(R.top.v.placa)} · ${nf(R.top.km)} km no mês` : 'sem viagens no mês'}</span></div></div>
       </div>` : '<div class="empty">Nenhuma operação registrada neste mês.</div>'}
       <p class="muted" style="font-size:12px;margin:10px 0 0">Período: ${fd(R.ini)} a ${fd(R.fim)}. "Em andamento" são os veículos assumidos e ainda não liberados.</p></section>
     <section class="card"><header><h2>Histórico recente</h2></header>
-      <div class="list">${recent.map(r => r.k === 'v' ? `<div class="li">${ico('route')}<div class="t"><b>${esc(DB.veh(r.t.vehicle_id).nome)}</b> · ${esc(r.t.origem_destino)}<div class="muted" style="font-size:12px">${fd(r.t.data)} ${esc(r.t.hora_saida || '')} · ${esc(DB.user(r.t.user_id)?.nome || r.t.usuario_texto)} · <span class="mono">${nf(r.t.km_chegada - r.t.km_saida)} km</span></div></div></div>` : `<div class="li">${ico('fuel')}<div class="t"><b>${esc(DB.veh(r.a.vehicle_id).nome)}</b> · ${esc(r.a.posto || 'Abastecimento')}<div class="muted" style="font-size:12px">${fd(r.a.data)} ${esc(r.a.hora)} · <span class="mono">${nf(r.a.litros, 2)} L · ${brl(r.a.total)}</span></div></div></div>`).join('') || '<div class="empty">Sem movimentação no período.</div>'}</div></section>
+      <div class="list">${recent.map(r => r.k === 'v' ? `<div class="li">${ico('route')}<div class="t"><b>${esc(DB.veh(r.t.vehicle_id).nome)}</b> · ${esc(r.t.origem_destino)}<div class="muted" style="font-size:12px">${fd(r.t.data)} ${esc(r.t.hora_saida || '')} · ${esc(DB.user(r.t.user_id)?.nome || r.t.usuario_texto)} · <span class="mono">${nf(r.t.km_chegada - r.t.km_saida)} km</span></div></div></div>` : `<div class="li">${ico('fuel')}<div class="t"><b>${esc(DB.veh(r.a.vehicle_id).nome)}</b> · ${esc(r.a.posto || 'Abastecimento')}<div class="muted" style="font-size:12px">${fd(r.a.data)} ${esc(r.a.hora)} · <span class="mono">${nf(r.a.litros, 2)} L</span></div></div></div>`).join('') || '<div class="empty">Sem movimentação no período.</div>'}</div></section>
   </div>`;
 }
 
