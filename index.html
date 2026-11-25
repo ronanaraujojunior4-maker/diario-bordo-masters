@@ -198,6 +198,16 @@ fieldset.rec legend{font-weight:700;padding:0 6px}
 #pdfm .h3 td{overflow-wrap:normal;font:bold 7.5pt Arial,sans-serif;height:22.5pt;text-align:center;vertical-align:middle}
 #pdfm tr.d td{height:22pt;font:10pt "Times New Roman",Times,serif;text-align:center;vertical-align:middle}#pdfm tr.d td.a{font:8pt Arial,sans-serif}#pdfm tr.d td.l{text-align:left}#pdfm tr.d td.j{font-size:8pt}
 #pdfm .h4 td{font:bold 9pt Arial,sans-serif;height:24pt;vertical-align:top}
+/* PDF "Desde o último abastecimento": comprovante do sistema anterior */
+#pdfm.comp table{table-layout:auto;font:9pt Roboto,Arial,Helvetica,sans-serif;color:#222}
+#pdfm.comp td,#pdfm.comp th{all:unset;display:table-cell;box-sizing:border-box;border:1px solid #d6d7e6;padding:5pt 6pt;vertical-align:middle;font:300 8.5pt Roboto,Arial,sans-serif;color:#222;background:#fff;position:static;text-align:left}
+#pdfm.comp tr{all:unset;display:table-row}#pdfm.comp thead{display:table-header-group}#pdfm.comp tbody{display:table-row-group}#pdfm.comp img{all:unset}
+#pdfm.comp tr.hd th{border:0;border-bottom:1px solid #d6d7e6;color:#9a9a9a;font-size:7.5pt;text-transform:uppercase}
+#pdfm.comp th.tp{border:0;padding:0 0 6pt}#pdfm.comp .ch{display:flex;align-items:center;gap:10pt}#pdfm.comp .ch img{height:26pt;display:block}#pdfm.comp .ch span{font:400 14pt Roboto,Arial,sans-serif;color:#3b3f8f}
+#pdfm.comp .ci{margin:4pt 0 0;font:400 8.5pt Roboto,Arial,sans-serif;color:#222}#pdfm.comp b{font-weight:500}#pdfm.comp small{font-size:6.5pt}
+#pdfm.comp tr.ft td{padding:6pt}#pdfm.comp tr.as td{padding:12pt 6pt}#pdfm.comp .cv{color:#a33;padding:8pt 0}#pdfm.comp tr{break-inside:avoid}
+#pdfm.comp .cp{break-after:page;page-break-after:always}#pdfm.comp .cp:last-child{break-after:auto;page-break-after:auto}
+@page{@bottom-right{content:"Página " counter(page) " de " counter(pages);font:8pt Arial,sans-serif;color:#777}}
 @media print{body.pdfm>*:not(#pdfm){display:none!important}body.pdfm{background:#fff!important}body.pdfm #pdfm{display:block}#pdfm .pm{break-after:page;page-break-after:always}#pdfm .pm:last-child{break-after:auto;page-break-after:auto}@page{size:A4 landscape;margin:8mm}}
 fieldset.tq{border:0;margin:0;padding:0;min-width:0}fieldset.tq legend{padding:0;margin-bottom:6px;font-size:13px;font-weight:600}
 .seg{display:flex;gap:8px;flex-wrap:wrap}.seg label{display:flex;align-items:center;gap:8px;min-height:44px;padding:0 14px;border:1px solid var(--line);border-radius:10px;cursor:pointer;font-weight:500}
@@ -247,6 +257,6 @@ tr.sel td{background:rgba(47,107,255,.14)!important}tr.sel td:first-child{box-sh
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="config.js?v=20261125-1800"></script>
-<script src="cloud.js?v=20261125-1800"></script>
-<script src="app.js?v=20261125-1800"></script>
+<script src="config.js?v=20261125-1830"></script>
+<script src="cloud.js?v=20261125-1830"></script>
+<script src="app.js?v=20261125-1830"></script>

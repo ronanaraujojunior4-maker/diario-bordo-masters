@@ -226,7 +226,7 @@ const DB = {
 
 /* ───────────── Estado e sessão ───────────── */
 const S = { user: null, route: 'painel', charts: [], regFilter: '', relTab: 'viagens', rel: { ini: isoDay(addDays(new Date(), -29)), fim: today(), vid: '', uid: '' }, importPreview: null, cadTab: 'veiculos' };
-const APP_VERSAO = '20261125-1800';
+const APP_VERSAO = '20261125-1830';
 const isAdmin = () => S.user?.papel === 'admin';
 const podeOperar = () => !!S.user && (S.user.papel !== 'admin' || !!S.user.opera_veiculos); // funcionário ou administrador que também opera (RONAN)
 const operador = u => u && u.ativo !== false && !u.excluido_em && (u.papel !== 'admin' || u.opera_veiculos); // pode ser responsável/autorizado
@@ -366,7 +366,7 @@ function renderShell() {
       <div class="grp">Operação</div>${main.map(navItem).join('')}
       ${isAdmin() ? `<div class="grp">Administração</div>${adm.map(navItem).join('')}` : ''}
       <div class="foot">
-        <div class="ver muted">Versão 20261125-1800</div>
+        <div class="ver muted">Versão 20261125-1830</div>
         <div class="me"><span class="avatar">${esc(S.user.nome.split(' ').map(p => p[0]).slice(0, 2).join(''))}</span><span class="who"><b>${esc(S.user.nome)}</b><span>${isAdmin() ? (podeOperar() ? 'Administrador e operacional' : 'Administrador') : 'Funcionário'} · ${esc(S.user.usuario)}</span></span></div>
         ${window.CLOUD ? `<button class="lnk" id="mypass" title="Alterar minha senha">${ico('key')}<span class="lbl">Alterar minha senha</span></button>` : ''}
         <button class="lnk" id="collapse" title="Recolher menu">${ico('panel')}<span class="lbl">Recolher menu</span></button>
@@ -860,7 +860,7 @@ function rRelatorios() {
     $$('[data-rt]').forEach(b => b.onclick = () => { S.relTab = b.dataset.rt; route(); });
     $$('[data-at]').forEach(b => b.onclick = () => { const n = new Date(); let i, f = today(); if (b.dataset.at === '7') i = isoDay(addDays(n, -6)); if (b.dataset.at === '30') i = isoDay(addDays(n, -29)); if (b.dataset.at === 'mes') i = isoDay(new Date(n.getFullYear(), n.getMonth(), 1)); if (b.dataset.at === 'ant') { i = isoDay(new Date(n.getFullYear(), n.getMonth() - 1, 1)); f = isoDay(new Date(n.getFullYear(), n.getMonth(), 0)); } Object.assign(S.rel, { ini: i, fim: f, ciclo: false }); route(); });
     $('#r-ciclo')?.addEventListener('click', () => { S.rel.ciclo = true; const C = relCiclos().filter(c => c.ref); if (C.length) Object.assign(S.rel, { ini: C.map(c => c.ref.data).sort()[0], fim: today() }); route(); });
-    $('#x-xlsx')?.addEventListener('click', exportXlsx); $('#x-csv')?.addEventListener('click', exportCsv); $('#x-pdf')?.addEventListener('click', exportPdfModelo);
+    $('#x-xlsx')?.addEventListener('click', exportXlsx); $('#x-csv')?.addEventListener('click', exportCsv); $('#x-pdf')?.addEventListener('click', () => S.rel.ciclo ? exportPdfComprovante() : exportPdfModelo());
   };
   const km = T.reduce((s, t) => s + t.km_chegada - t.km_saida, 0), tot = A.reduce((s, a) => s + a.total, 0);
   return `<section class="card"><form class="f" onsubmit="return false">
@@ -881,6 +881,32 @@ function rRelatorios() {
 }
 // PDF no mesmo layout da planilha oficial "Controle de Utilização Veículo" (assets/modelo-diario-de-bordo.xlsx):
 // mesmas linhas, colunas, larguras, textos, fontes e logotipo; uma folha A4 paisagem por veículo e bloco de 19 linhas, como no Excel.
+function imprimePdf(html, cls) { // monta as folhas em #pdfm e abre a impressão (Salvar como PDF)
+  let box = $('#pdfm'); if (!box) { box = document.createElement('div'); box.id = 'pdfm'; document.body.append(box); }
+  box.className = cls; box.innerHTML = html; document.body.classList.add('pdfm');
+  const fim = () => { document.body.classList.remove('pdfm'); box.innerHTML = ''; removeEventListener('afterprint', fim); };
+  addEventListener('afterprint', fim);
+  Promise.all([...box.querySelectorAll('img')].map(i => i.complete ? 0 : new Promise(r => { i.onload = i.onerror = r; }))).then(() => window.print());
+}
+// "Desde o último abastecimento": mesmo comprovante que o sistema anterior gerava (Comprovante de Utilização do Veículo), um por veículo.
+function exportPdfComprovante() {
+  const em = new Date().toLocaleString('pt-BR'), b = (k, v) => `<b>${k}:</b> ${v}`, pg = [];
+  for (const c of relCiclos()) {
+    const v = c.v, cab = `<div class="ch"><img src="assets/logo-masters.svg" alt="Master's Engenharia"><span>COMPROVANTE DE UTILIZAÇÃO DO VEÍCULO</span></div>`;
+    if (!c.ref) { pg.push(`<section class="cp">${cab}<p class="ci">${b('Veículo', esc(v.nome.toUpperCase()))} &nbsp; ${b('Placa', esc(v.placa))} &nbsp; ${b('Emitido em', em)}</p><p class="cv">Sem abastecimento registrado: dados insuficientes para gerar o ciclo.</p></section>`); continue; }
+    const r = c.ref, pr = `${nf(r.litros, 2)} L / ${brl(r.total)}`;
+    const info = [b('Veículo', esc(v.nome.toUpperCase())), b('Placa', esc(v.placa)), b('Último abastecimento', `${fd(r.data)} às ${esc(hhmm(r.hora))}`), b('KM no abastecimento', r.km != null ? r.km : 'não informada'), r.posto ? b('Posto', esc(r.posto)) : '', b('Litros / valor', pr), b('Emitido em', em)].filter(Boolean).join(' &nbsp; ');
+    const lin = c.T.map(t => `<tr><td>${fd(t.data)}</td><td>${esc(hhmm(t.hora_saida))}</td><td>${esc(hhmm(t.hora_chegada))}</td><td>${t.km_saida}</td><td>${t.km_chegada}</td><td>${t.km_chegada - t.km_saida}</td><td>${esc(t.origem_destino)}</td><td>${esc(t.motorista || '')}${t.usuario_texto || DB.user(t.user_id) ? ` <small>(reg.: ${esc(t.usuario_texto || DB.user(t.user_id)?.usuario || '')})</small>` : ''}</td><td>${esc(t.finalidade || '')}</td><td>${esc(t.obs || '')}</td></tr>`).join('');
+    pg.push(`<section class="cp"><table><thead><tr><th colspan="10" class="tp">${cab}<p class="ci">${info}</p></th></tr>
+      <tr class="hd"><th>DATA</th><th>SAÍDA</th><th>CHEGADA</th><th>KM SAÍDA</th><th>KM CHEGADA</th><th>KM PERCORRIDO</th><th>ORIGEM / DESTINO</th><th>MOTORISTA / REGISTRADO POR</th><th>FINALIDADE</th><th>OBSERVAÇÃO</th></tr></thead>
+      <tbody>${lin || '<tr><td colspan="10" class="cv">Nenhuma viagem registrada após o último abastecimento.</td></tr>'}
+      <tr class="ft"><td colspan="10">${b('Total de viagens desde o abastecimento', c.T.length)} &nbsp; ${b('Total de KM percorridos', c.km + ' km')}</td></tr>
+      <tr class="ft"><td colspan="10">${b('Última utilização registrada', c.ult ? `${fd(c.ult.data)} — KM ${c.ult.km_chegada}` : 'nenhuma viagem após o abastecimento')}</td></tr>
+      <tr class="ft as"><td colspan="10">Responsável pelo veículo: ______________________________ &nbsp; Visto / liberação: ______________________________</td></tr></tbody></table></section>`);
+  }
+  if (!pg.length) return toast('Nenhum veículo para exportar.');
+  imprimePdf(pg.join(''), 'comp');
+}
 function exportPdfModelo() {
   const { T, A } = relData(), W = [11.66, 14, 17.66, 11.66, 14, 42, 19.83, 12.66, 34.83, 23.33], tw = W.reduce((s, x) => s + x, 0), pages = [];
   const H = ['DATA', 'KM SAÍDA', 'KM CHEGADA', 'HORA SAÍDA', 'HORA CHEGADA', 'ORIGEM / DESTINO', 'NOME MOTORISTA<br>(legível)', 'VISTO MOTORISTA', 'FINALIDADE', 'ABASTECIMENTO'];
@@ -891,7 +917,7 @@ function exportPdfModelo() {
       const L = I.slice(p * 19, p * 19 + 19); let soma = 0;
       const rows = [...Array(19)].map((_, i) => {
         const o = L[i]; if (!o) return '<tr class="d">' + '<td></td>'.repeat(10) + '</tr>';
-        const r = o.t; if (r) soma += r.km_chegada;
+        const r = o.t; if (r) soma += r.km_chegada - r.km_saida;
         return `<tr class="d"><td class="a">${r ? fd(r.data) : ''}</td><td>${r ? r.km_saida : ''}</td><td>${r ? r.km_chegada : ''}</td><td>${r ? esc(hhmm(r.hora_saida)) : ''}</td><td>${r ? esc(hhmm(r.hora_chegada)) : ''}</td><td>${r ? esc(r.origem_destino) : ''}</td><td class="l">${r ? esc(r.motorista) : ''}</td><td class="l">${r && r.visto ? 'OK' : ''}</td><td>${r ? esc(r.finalidade || '') : ''}</td><td class="l j">${o.f.map(x => esc(linhaAb(x))).join('<br>')}</td></tr>`;
       });
       pages.push(`<div class="pm"><table><colgroup>${W.map(w => `<col style="width:${(w / tw * 100).toFixed(2)}%">`).join('')}</colgroup>
@@ -903,11 +929,7 @@ function exportPdfModelo() {
     }
   }
   if (!pages.length) return toast('Nenhum registro no período para exportar.');
-  let box = $('#pdfm'); if (!box) { box = document.createElement('div'); box.id = 'pdfm'; document.body.append(box); }
-  box.innerHTML = pages.join(''); document.body.classList.add('pdfm');
-  const fim = () => { document.body.classList.remove('pdfm'); box.innerHTML = ''; removeEventListener('afterprint', fim); };
-  addEventListener('afterprint', fim);
-  const img = box.querySelector('img'); (img.complete ? Promise.resolve() : new Promise(r => { img.onload = img.onerror = r; })).then(() => window.print());
+  imprimePdf(pages.join(''), 'modelo');
 }
 function dl(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); }
 // Exportação no modelo original "Controle de Utilização Veículo" (assets/modelo-diario-de-bordo.xlsx):
@@ -938,12 +960,12 @@ async function exportXlsx() {
         x = putCell(x, 'J1', 'KM Troca Óleo:' + (v.km_troca_oleo ? ' ' + v.km_troca_oleo : '')); x = putCell(x, 'J2', 'Data Troca Óleo:' + (v.data_troca_oleo ? ' ' + fd(v.data_troca_oleo) : ''));
         I.slice(p * 19, p * 19 + 19).forEach((o, i) => {
           const n = 4 + i, r = o.t;
-          if (r) { const sd = serial(r.data); if (sd) x = putCell(x, 'A' + n, sd, 1); x = putCell(x, 'B' + n, r.km_saida, 1); x = putCell(x, 'C' + n, r.km_chegada, 1); soma += r.km_chegada;
+          if (r) { const sd = serial(r.data); if (sd) x = putCell(x, 'A' + n, sd, 1); x = putCell(x, 'B' + n, r.km_saida, 1); x = putCell(x, 'C' + n, r.km_chegada, 1); soma += r.km_chegada - r.km_saida;
             [['D', r.hora_saida], ['E', r.hora_chegada], ['F', r.origem_destino], ['G', r.motorista], ['H', r.visto ? 'OK' : ''], ['I', r.finalidade]].forEach(([c, val]) => { if (val) x = putCell(x, c + n, val); }); }
           if (o.f.length) x = putCell(x, 'J' + n, o.f.map(linhaAb).join('\n'));
         });
         if (v.obs) x = putCell(x, 'A24', 'Observações: ' + v.obs);
-        x = x.replace('<f>SUM(C4:C22)</f><v>0</v>', `<f>SUM(C4:C22)</f><v>${soma}</v>`);
+        x = x.replace('<f>SUM(C4:C22)</f><v>0</v>', `<v>${soma}</v>`); // Total = km rodados no bloco (não a soma das km de chegada)
         z.file('xl/worksheets/sheet1.xml', x);
         out.push([`diario-bordo-${S.rel.ciclo ? 'desde-ultimo-abastecimento-' + pv.ini + '_' + pv.fim : S.rel.ini + '_' + S.rel.fim}-${v.placa.replace(/\W/g, '')}${partes > 1 ? '-parte' + (p + 1) : ''}.xlsx`, await z.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })]);
       }
