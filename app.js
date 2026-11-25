@@ -226,6 +226,7 @@ const DB = {
 
 /* ───────────── Estado e sessão ───────────── */
 const S = { user: null, route: 'painel', charts: [], regFilter: '', relTab: 'viagens', rel: { ini: isoDay(addDays(new Date(), -29)), fim: today(), vid: '', uid: '' }, importPreview: null, cadTab: 'veiculos' };
+const APP_VERSAO = '20261125-1600';
 const isAdmin = () => S.user?.papel === 'admin';
 const podeOperar = () => !!S.user && (S.user.papel !== 'admin' || !!S.user.opera_veiculos); // funcionário ou administrador que também opera (RONAN)
 const operador = u => u && u.ativo !== false && !u.excluido_em && (u.papel !== 'admin' || u.opera_veiculos); // pode ser responsável/autorizado
@@ -365,6 +366,7 @@ function renderShell() {
       <div class="grp">Operação</div>${main.map(navItem).join('')}
       ${isAdmin() ? `<div class="grp">Administração</div>${adm.map(navItem).join('')}` : ''}
       <div class="foot">
+        <div class="ver muted">Versão 20261125-1600</div>
         <div class="me"><span class="avatar">${esc(S.user.nome.split(' ').map(p => p[0]).slice(0, 2).join(''))}</span><span class="who"><b>${esc(S.user.nome)}</b><span>${isAdmin() ? (podeOperar() ? 'Administrador e operacional' : 'Administrador') : 'Funcionário'} · ${esc(S.user.usuario)}</span></span></div>
         ${window.CLOUD ? `<button class="lnk" id="mypass" title="Alterar minha senha">${ico('key')}<span class="lbl">Alterar minha senha</span></button>` : ''}
         <button class="lnk" id="collapse" title="Recolher menu">${ico('panel')}<span class="lbl">Recolher menu</span></button>
@@ -519,7 +521,8 @@ function rPainel() {
     mkChart('c-fuel', { type: 'doughnut', data: { labels: V.map(v => v.nome), datasets: [{ data: V.map(v => P.A.filter(a => a.vehicle_id === v.id).reduce((s, a) => s + a.total, 0)), backgroundColor: V.map((_, i) => VCOL[i % VCOL.length]), borderColor: css('--surface'), borderWidth: 3 }] }, options: { maintainAspectRatio: false, cutout: '68%', plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, usePointStyle: true } }, tooltip: { callbacks: { label: c => `${c.label}: ${brl(c.raw)}` } } } } });
   };
   return `
-  ${podeOperar() ? `<div class="msg ${mine ? 'ok' : 'info'}">${ico(mine ? 'check' : 'car')}<span>${mine ? `Você está com o <b>${esc(DB.veh(mine.vehicle_id).nome)}</b> desde ${fdt(mine.inicio)}. <a href="#registro">Registrar viagem</a> · <a href="#abastecimento">Registrar abastecimento</a>` : 'Você não está com nenhum veículo. Assuma um veículo disponível abaixo para registrar viagens e abastecimentos.'}</span></div>` : ''}
+  ${podeOperar() ? `<div class="msg ${mine ? 'ok' : 'info'} acoes-op">${ico(mine ? 'check' : 'car')}<span>${mine ? `Você está com o <b>${esc(DB.veh(mine.vehicle_id).nome)}</b> desde ${fdt(mine.inicio)}.` : 'Você não está com nenhum veículo. Assuma o veículo sob sua responsabilidade para registrar viagens e abastecimentos.'}</span>
+    <span class="acoes-bt">${mine ? `<a class="btn" href="#registro">${ico('route')}Registrar viagem</a><a class="btn sec" href="#abastecimento">${ico('fuel')}Registrar abastecimento</a>` : `<a class="btn" href="#registro">${ico('car')}Assumir veículo</a>`}</span></div>` : ''}
   <section class="kpis k8" aria-label="Indicadores dos últimos 30 dias">
     <div class="kpi" style="--tone:var(--navy-2)"><span class="k">${ico('car')}Veículos</span><span class="v">${V.length}</span><span class="s">${isAdmin() ? 'cadastrados' : 'autorizados para você'}</span></div>
     <div class="kpi" style="--tone:var(--ok)"><span class="k">Disponíveis</span><span class="v">${FO.disp}</span><span class="s">prontos para uso</span></div>
@@ -633,7 +636,7 @@ function mostraSel() {
   $$('tr[data-sel]').forEach(t => { const on = t.dataset.sel === x.k + ':' + x.id; t.classList.toggle('sel', on); t.setAttribute('aria-selected', String(on)); });
   let b = $('#selbar'); if (!b) { b = document.createElement('div'); b.id = 'selbar'; b.className = 'selbar'; b.setAttribute('role', 'region'); b.setAttribute('aria-label', 'Ações do registro selecionado'); ($('#app') || document.body).append(b); }
   const r = x.r, v = DB.veh(r.vehicle_id), pode = DB.canEdit(r);
-  const desc = x.k === 't' ? `<small>Viagem selecionada</small><b>${esc(v?.nome || '')} · ${fd(r.data)} ${esc(r.hora_saida || '')} · ${nf(r.km_saida)} → ${nf(r.km_chegada)} km</b>` : `<small>Abastecimento selecionado</small><b>${esc(v?.nome || '')} · ${fd(r.data)} ${esc(r.hora || '')} · ${nf(r.litros, 2)} L · ${brl(r.total)}</b>`;
+  const desc = x.k === 't' ? `<small>Viagem selecionada</small><b>${esc(v?.nome || '')} · ${fd(r.data)} ${esc(hhmm(r.hora_saida))} · ${nf(r.km_saida)} → ${nf(r.km_chegada)} km</b>` : `<small>Abastecimento selecionado</small><b>${esc(v?.nome || '')} · ${fd(r.data)} ${esc(hhmm(r.hora))} · ${nf(r.litros, 2)} L · ${brl(r.total)}</b>`;
   b.innerHTML = `<div class="sb-t">${desc}${pode ? '' : '<span>Registro de outra pessoa: só o autor ou um administrador pode alterar.</span>'}</div>
     <div class="sb-a">${pode ? `<button type="button" class="btn" id="sb-e">Editar</button><button type="button" class="btn danger" id="sb-x">Excluir</button>` : ''}<button type="button" class="btn sec" id="sb-c">Fechar</button></div>`;
   b.hidden = false;
@@ -755,7 +758,7 @@ function rAbastecimento() {
   const mine = DB.myUse(), V = DB.vehicles();
   let top = '';
   if (!podeOperar()) top = `<div class="msg info">${ico('shield')}<span>Esta conta é exclusivamente administrativa: consulta e corrige abastecimentos, mas não registra em nome dos funcionários.</span></div>`;
-  else if (!mine) top = `<div class="msg info">${ico('car')}<span>Assuma um veículo na <a href="#registro">tela de Registro</a> para lançar abastecimentos.</span></div>`;
+  else if (!mine) top = `<div class="msg info acoes-op">${ico('car')}<span>Para registrar um abastecimento, primeiro assuma o veículo sob sua responsabilidade.</span><span class="acoes-bt"><a class="btn" href="#registro">${ico('car')}Assumir veículo</a></span></div>`;
   else {
     const vid = mine.vehicle_id, lk = DB.lastKm(vid), postos = [...new Set(DB.d.fuelings.map(a => a.posto).filter(Boolean))];
     const trips = DB.ordered(vid).reverse().slice(0, 8);
