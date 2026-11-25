@@ -226,7 +226,7 @@ const DB = {
 
 /* ───────────── Estado e sessão ───────────── */
 const S = { user: null, route: 'painel', charts: [], regFilter: '', relTab: 'viagens', rel: { ini: isoDay(addDays(new Date(), -29)), fim: today(), vid: '', uid: '' }, importPreview: null, cadTab: 'veiculos' };
-const APP_VERSAO = '20261125-1730';
+const APP_VERSAO = '20261125-1800';
 const isAdmin = () => S.user?.papel === 'admin';
 const podeOperar = () => !!S.user && (S.user.papel !== 'admin' || !!S.user.opera_veiculos); // funcionário ou administrador que também opera (RONAN)
 const operador = u => u && u.ativo !== false && !u.excluido_em && (u.papel !== 'admin' || u.opera_veiculos); // pode ser responsável/autorizado
@@ -366,7 +366,7 @@ function renderShell() {
       <div class="grp">Operação</div>${main.map(navItem).join('')}
       ${isAdmin() ? `<div class="grp">Administração</div>${adm.map(navItem).join('')}` : ''}
       <div class="foot">
-        <div class="ver muted">Versão 20261125-1730</div>
+        <div class="ver muted">Versão 20261125-1800</div>
         <div class="me"><span class="avatar">${esc(S.user.nome.split(' ').map(p => p[0]).slice(0, 2).join(''))}</span><span class="who"><b>${esc(S.user.nome)}</b><span>${isAdmin() ? (podeOperar() ? 'Administrador e operacional' : 'Administrador') : 'Funcionário'} · ${esc(S.user.usuario)}</span></span></div>
         ${window.CLOUD ? `<button class="lnk" id="mypass" title="Alterar minha senha">${ico('key')}<span class="lbl">Alterar minha senha</span></button>` : ''}
         <button class="lnk" id="collapse" title="Recolher menu">${ico('panel')}<span class="lbl">Recolher menu</span></button>
@@ -860,7 +860,7 @@ function rRelatorios() {
     $$('[data-rt]').forEach(b => b.onclick = () => { S.relTab = b.dataset.rt; route(); });
     $$('[data-at]').forEach(b => b.onclick = () => { const n = new Date(); let i, f = today(); if (b.dataset.at === '7') i = isoDay(addDays(n, -6)); if (b.dataset.at === '30') i = isoDay(addDays(n, -29)); if (b.dataset.at === 'mes') i = isoDay(new Date(n.getFullYear(), n.getMonth(), 1)); if (b.dataset.at === 'ant') { i = isoDay(new Date(n.getFullYear(), n.getMonth() - 1, 1)); f = isoDay(new Date(n.getFullYear(), n.getMonth(), 0)); } Object.assign(S.rel, { ini: i, fim: f, ciclo: false }); route(); });
     $('#r-ciclo')?.addEventListener('click', () => { S.rel.ciclo = true; const C = relCiclos().filter(c => c.ref); if (C.length) Object.assign(S.rel, { ini: C.map(c => c.ref.data).sort()[0], fim: today() }); route(); });
-    $('#x-xlsx')?.addEventListener('click', exportXlsx); $('#x-csv')?.addEventListener('click', exportCsv); $('#x-pdf')?.addEventListener('click', () => window.print());
+    $('#x-xlsx')?.addEventListener('click', exportXlsx); $('#x-csv')?.addEventListener('click', exportCsv); $('#x-pdf')?.addEventListener('click', exportPdfModelo);
   };
   const km = T.reduce((s, t) => s + t.km_chegada - t.km_saida, 0), tot = A.reduce((s, a) => s + a.total, 0);
   return `<section class="card"><form class="f" onsubmit="return false">
@@ -878,6 +878,36 @@ function rRelatorios() {
   <header style="margin:16px 0 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
   ${inFrame ? `<div class="msg info" style="flex:1">${ico('file')}<span>Exportação para Excel (no layout "Controle de Utilização Veículo"), CSV no formato do sistema anterior e PDF ficam disponíveis na versão publicada do sistema. Este visualizador de demonstração bloqueia downloads.</span></div>` : `<div class="bar"><button class="btn" id="x-xlsx">${ico('file')}Exportar Excel</button><button class="btn sec" id="x-csv">Exportar CSV</button><button class="btn sec" id="x-pdf">Exportar PDF</button></div>`}
   </header></section>`;
+}
+// PDF no mesmo layout da planilha oficial "Controle de Utilização Veículo" (assets/modelo-diario-de-bordo.xlsx):
+// mesmas linhas, colunas, larguras, textos, fontes e logotipo; uma folha A4 paisagem por veículo e bloco de 19 linhas, como no Excel.
+function exportPdfModelo() {
+  const { T, A } = relData(), W = [11.66, 14, 17.66, 11.66, 14, 42, 19.83, 12.66, 34.83, 23.33], tw = W.reduce((s, x) => s + x, 0), pages = [];
+  const H = ['DATA', 'KM SAÍDA', 'KM CHEGADA', 'HORA SAÍDA', 'HORA CHEGADA', 'ORIGEM / DESTINO', 'NOME MOTORISTA<br>(legível)', 'VISTO MOTORISTA', 'FINALIDADE', 'ABASTECIMENTO'];
+  for (const v of DB.vehicles().filter(v => !S.rel.vid || v.id === S.rel.vid)) {
+    const I = itensExport(T.filter(x => x.vehicle_id === v.id), A.filter(x => x.vehicle_id === v.id)); if (!I.length) continue;
+    const pv = relPeriodo(v), lk = DB.lastKm(v.id).km, partes = Math.ceil(I.length / 19);
+    for (let p = 0; p < partes; p++) {
+      const L = I.slice(p * 19, p * 19 + 19); let soma = 0;
+      const rows = [...Array(19)].map((_, i) => {
+        const o = L[i]; if (!o) return '<tr class="d">' + '<td></td>'.repeat(10) + '</tr>';
+        const r = o.t; if (r) soma += r.km_chegada;
+        return `<tr class="d"><td class="a">${r ? fd(r.data) : ''}</td><td>${r ? r.km_saida : ''}</td><td>${r ? r.km_chegada : ''}</td><td>${r ? esc(hhmm(r.hora_saida)) : ''}</td><td>${r ? esc(hhmm(r.hora_chegada)) : ''}</td><td>${r ? esc(r.origem_destino) : ''}</td><td class="l">${r ? esc(r.motorista) : ''}</td><td class="l">${r && r.visto ? 'OK' : ''}</td><td>${r ? esc(r.finalidade || '') : ''}</td><td class="l j">${o.f.map(x => esc(linhaAb(x))).join('<br>')}</td></tr>`;
+      });
+      pages.push(`<div class="pm"><table><colgroup>${W.map(w => `<col style="width:${(w / tw * 100).toFixed(2)}%">`).join('')}</colgroup>
+        <tr class="h1"><td colspan="9" class="t"><img src="assets/logo-modelo.png" alt="Master's Engenharia">Controle de Utilização Veículo</td><td class="r">KM Troca Óleo:${v.km_troca_oleo ? ' ' + v.km_troca_oleo : ''}</td></tr>
+        <tr class="h2"><td colspan="2">Veículo: ${esc(v.nome.toUpperCase())}</td><td>Placa: ${esc(v.placa)}</td><td colspan="2"></td><td class="f">Km Final: ${lk ?? ''}</td><td colspan="2">Data Início:  ${fd(pv.ini)}</td><td>Data Final: ${fd(pv.fim)}</td><td class="r">Data Troca Óleo:${v.data_troca_oleo ? ' ' + fd(v.data_troca_oleo) : ''}</td></tr>
+        <tr class="h3">${H.map(h => `<td>${h}</td>`).join('')}</tr>${rows.join('')}
+        <tr class="d"><td></td><td>Total</td><td>${soma}</td>${'<td></td>'.repeat(7)}</tr>
+        <tr class="h4"><td colspan="10">Observações:${v.obs ? ' ' + esc(v.obs) : ''}</td></tr></table></div>`);
+    }
+  }
+  if (!pages.length) return toast('Nenhum registro no período para exportar.');
+  let box = $('#pdfm'); if (!box) { box = document.createElement('div'); box.id = 'pdfm'; document.body.append(box); }
+  box.innerHTML = pages.join(''); document.body.classList.add('pdfm');
+  const fim = () => { document.body.classList.remove('pdfm'); box.innerHTML = ''; removeEventListener('afterprint', fim); };
+  addEventListener('afterprint', fim);
+  const img = box.querySelector('img'); (img.complete ? Promise.resolve() : new Promise(r => { img.onload = img.onerror = r; })).then(() => window.print());
 }
 function dl(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); }
 // Exportação no modelo original "Controle de Utilização Veículo" (assets/modelo-diario-de-bordo.xlsx):
@@ -912,6 +942,7 @@ async function exportXlsx() {
             [['D', r.hora_saida], ['E', r.hora_chegada], ['F', r.origem_destino], ['G', r.motorista], ['H', r.visto ? 'OK' : ''], ['I', r.finalidade]].forEach(([c, val]) => { if (val) x = putCell(x, c + n, val); }); }
           if (o.f.length) x = putCell(x, 'J' + n, o.f.map(linhaAb).join('\n'));
         });
+        if (v.obs) x = putCell(x, 'A24', 'Observações: ' + v.obs);
         x = x.replace('<f>SUM(C4:C22)</f><v>0</v>', `<f>SUM(C4:C22)</f><v>${soma}</v>`);
         z.file('xl/worksheets/sheet1.xml', x);
         out.push([`diario-bordo-${S.rel.ciclo ? 'desde-ultimo-abastecimento-' + pv.ini + '_' + pv.fim : S.rel.ini + '_' + S.rel.fim}-${v.placa.replace(/\W/g, '')}${partes > 1 ? '-parte' + (p + 1) : ''}.xlsx`, await z.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })]);
