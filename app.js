@@ -226,7 +226,7 @@ const DB = {
 
 /* ───────────── Estado e sessão ───────────── */
 const S = { user: null, route: 'painel', charts: [], regFilter: '', relTab: 'viagens', rel: { ini: isoDay(addDays(new Date(), -29)), fim: today(), vid: '', uid: '' }, importPreview: null, cadTab: 'veiculos' };
-const APP_VERSAO = '20261125-1620';
+const APP_VERSAO = '20261125-1640';
 const isAdmin = () => S.user?.papel === 'admin';
 const podeOperar = () => !!S.user && (S.user.papel !== 'admin' || !!S.user.opera_veiculos); // funcionário ou administrador que também opera (RONAN)
 const operador = u => u && u.ativo !== false && !u.excluido_em && (u.papel !== 'admin' || u.opera_veiculos); // pode ser responsável/autorizado
@@ -366,7 +366,7 @@ function renderShell() {
       <div class="grp">Operação</div>${main.map(navItem).join('')}
       ${isAdmin() ? `<div class="grp">Administração</div>${adm.map(navItem).join('')}` : ''}
       <div class="foot">
-        <div class="ver muted">Versão 20261125-1620</div>
+        <div class="ver muted">Versão 20261125-1640</div>
         <div class="me"><span class="avatar">${esc(S.user.nome.split(' ').map(p => p[0]).slice(0, 2).join(''))}</span><span class="who"><b>${esc(S.user.nome)}</b><span>${isAdmin() ? (podeOperar() ? 'Administrador e operacional' : 'Administrador') : 'Funcionário'} · ${esc(S.user.usuario)}</span></span></div>
         ${window.CLOUD ? `<button class="lnk" id="mypass" title="Alterar minha senha">${ico('key')}<span class="lbl">Alterar minha senha</span></button>` : ''}
         <button class="lnk" id="collapse" title="Recolher menu">${ico('panel')}<span class="lbl">Recolher menu</span></button>
@@ -480,7 +480,7 @@ const hhmm5 = h => hhmm(h) || '00:00';
 function cicloVeiculo(v) { // ciclo atual: do último abastecimento válido do veículo até agora (cada veículo com a sua referência)
   const F = DB.fuelings().filter(a => a.vehicle_id === v.id).sort((a, b) => (b.data + hhmm5(b.hora)).localeCompare(a.data + hhmm5(a.hora)));
   const ref = F[0];
-  if (!ref) return { v, ref: null };
+  if (!ref) return { v, ref: null, cons: { ok: false, motivo: 'nenhum abastecimento registrado' } };
   const marco = ref.data + ' ' + hhmm5(ref.hora), vistos = new Set();
   const T = DB.trips().filter(t => {
     if (t.vehicle_id !== v.id || !(t.km_chegada >= t.km_saida)) return false;
@@ -489,9 +489,16 @@ function cicloVeiculo(v) { // ciclo atual: do último abastecimento válido do v
     const k = t.chave_import || chaveViagem(t, v.placa); if (vistos.has(k)) return false; vistos.add(k); return true;
   });
   const conflitos = DB.inconsistencies(v.id).filter(i => T.some(t => t.id === i.trip.id)).length;
-  // Consumo: exigiria saber quanto combustível foi gasto no ciclo. O abastecimento não registra "tanque cheio",
-  // então o volume abastecido não equivale ao consumido: o sistema não inventa esse número.
-  return { v, ref, T, km: T.reduce((s, t) => s + (t.km_chegada - t.km_saida), 0), litros: null, conflitos };
+  return { v, ref, T, km: T.reduce((s, t) => s + (t.km_chegada - t.km_saida), 0), conflitos, cons: consumoVeiculo(v) };
+}
+function consumoVeiculo(v) { // método tanque cheio → tanque cheio: km entre os dois últimos tanques cheios ÷ litros colocados depois do primeiro até o segundo (inclusive)
+  const F = DB.fuelings().filter(a => a.vehicle_id === v.id).sort((a, b) => (a.data + hhmm5(a.hora)).localeCompare(b.data + hhmm5(b.hora)));
+  const C = F.map((a, i) => i).filter(i => F[i].tanque_cheio === true && F[i].km != null);
+  if (C.length < 2) return { ok: false, motivo: C.length ? 'aguardando o próximo tanque cheio' : 'nenhum tanque cheio com km registrado' };
+  const i1 = C[C.length - 2], i2 = C[C.length - 1], a = F[i1], b = F[i2];
+  const km = b.km - a.km, litros = Math.round(F.slice(i1 + 1, i2 + 1).reduce((s, x) => s + Number(x.litros || 0), 0) * 100) / 100;
+  if (!(km > 0) || !(litros > 0)) return { ok: false, motivo: 'km ou litros inconsistentes entre os tanques cheios' };
+  return { ok: true, km, litros, kml: km / litros, de: a, ate: b };
 }
 function frotaOperacao() { // estados reais: uso ativo = em utilização; ativo e sem uso = disponível; reserva não existe no sistema
   const V = DB.vehicles().filter(v => v.ativo !== false);
@@ -509,7 +516,7 @@ function resumoOperacao() { // somente dados registrados (no modo oficial, os do
 }
 function rPainel() {
   const V = DB.vehicles(), ini = isoDay(addDays(new Date(), -29)), fim = today(), P = periodStats(ini, fim);
-  const FO = frotaOperacao(), emUso = FO.uso, R = resumoOperacao(), C = V.map(cicloVeiculo), CR = C.filter(c => c.ref), cKm = CR.reduce((s, c) => s + c.km, 0), cViag = CR.reduce((s, c) => s + c.T.length, 0), mes = new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+  const FO = frotaOperacao(), emUso = FO.uso, R = resumoOperacao(), C = V.map(cicloVeiculo), CR = C.filter(c => c.ref), CC = C.filter(c => c.cons.ok), cTotKm = CC.reduce((s, c) => s + c.cons.km, 0), cTotL = CC.reduce((s, c) => s + c.cons.litros, 0), cKm = CR.reduce((s, c) => s + c.km, 0), cViag = CR.reduce((s, c) => s + c.T.length, 0), mes = new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
   const recent = [...P.T.map(t => ({ k: 'v', at: t.data + (t.hora_saida || ''), t })), ...P.A.map(a => ({ k: 'a', at: a.data + a.hora, a }))].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 7);
   const mine = DB.myUse();
   afterRender.painel = () => {
@@ -529,14 +536,14 @@ function rPainel() {
     <div class="kpi" id="k-ciclo" role="button" tabindex="0" style="cursor:pointer;--tone:var(--cyan)"><span class="k">${ico('route')}Viagens no ciclo</span><span class="v">${CR.length ? nf(cViag) : '—'}</span><span class="s">${CR.length ? 'desde o último abastecimento de cada veículo' : 'Sem referência de abastecimento'}</span></div>
     <div class="kpi" style="--tone:var(--cyan)"><span class="k">Km no ciclo</span><span class="v">${CR.length ? nf(cKm) : '—'}</span><span class="s">${CR.length ? `soma dos ciclos atuais (${CR.length} de ${V.length} veículos)` : 'Sem referência de abastecimento'}</span></div>
     <div class="kpi" style="--tone:var(--warn)"><span class="k">${ico('fuel')}Combustível</span><span class="v">${brl0(P.tot)}</span><span class="s">${P.A.length} abastecimentos · ${nf(P.lit, 0)} L</span></div>
-    <div class="kpi" style="--tone:var(--graphite)"><span class="k">Consumo médio</span><span class="v" style="font-size:17px">${CR.length ? 'Dados insuficientes' : 'Sem referência de abastecimento'}</span><span class="s">${CR.length ? 'abastecimento sem registro de tanque cheio' : 'nenhum abastecimento registrado'}</span></div>
+    <div class="kpi" style="--tone:var(--graphite)"><span class="k">Consumo médio</span>${CC.length ? `<span class="v">${nf(cTotKm / cTotL, 1)} km/L</span><span class="s">${nf(cTotKm)} km ÷ ${nf(cTotL, 1)} L · tanque cheio a tanque cheio (${CC.length} de ${V.length} veículos)</span>` : `<span class="v" style="font-size:17px">Dados insuficientes</span><span class="s">precisa de dois abastecimentos com tanque cheio e km informada</span>`}</div>
     <div class="kpi" style="--tone:var(--electric)"><span class="k">${ico('car')}Frota em operação</span><span class="fo"><span><b>${FO.uso}</b>em uso</span><span><b>${FO.disp}</b>disponíveis</span><span><b>${FO.reservados}</b>reservados</span></span><span class="s">${FO.total} veículos ativos</span></div>
   </section>
   <section class="card"><header><h2>Frota agora</h2><span class="grow"></span><span class="muted" style="font-size:12px">Última km calculada a partir das viagens de todos os usuários</span></header>
     <div class="fleet">${V.map(v => vehCard(v)).join('') || '<div class="empty">Nenhum veículo autorizado.</div>'}</div></section>
   <section class="card" id="ciclos"><header><h2>Ciclo atual por veículo</h2><span class="grow"></span><span class="muted" style="font-size:12px">desde o último abastecimento de cada veículo</span></header>
-    ${table([{ h: 'Veículo', f: c => vehLabel(c.v) }, { h: 'Último abastecimento', f: c => c.ref ? `${fd(c.ref.data)} ${esc(hhmm(c.ref.hora))}${c.ref.km != null ? ` · <span class="mono">${nf(c.ref.km)} km</span>` : ''}` : '<span class="muted">Sem referência de abastecimento</span>' }, { h: 'Viagens', n: 1, f: c => c.ref ? c.T.length : '—' }, { h: 'Km percorridos', n: 1, f: c => c.ref ? `<span class="mono">${nf(c.km)}</span>` : '—' }, { h: 'Consumo médio', f: c => c.ref ? '<span class="muted">Dados insuficientes</span>' : '—' }, { h: 'Conflitos de km', f: c => c.ref && c.conflitos ? `<span class="pill p-warn">${c.conflitos}</span>` : c.ref ? '<span class="pill p-ok">0</span>' : '—' }], C, 'Nenhum veículo.')}
-    <p class="muted" style="font-size:12px;margin:10px 0 0">Consumo médio = km ÷ litros consumidos. O abastecimento não informa se o tanque foi completado, então os litros abastecidos não equivalem aos consumidos no ciclo; por isso o sistema mostra "Dados insuficientes" em vez de um número estimado. Conflitos de km (saída diferente da chegada anterior) aparecem no Registro.</p></section>
+    ${table([{ h: 'Veículo', f: c => vehLabel(c.v) }, { h: 'Último abastecimento', f: c => c.ref ? `${fd(c.ref.data)} ${esc(hhmm(c.ref.hora))}${c.ref.km != null ? ` · <span class="mono">${nf(c.ref.km)} km</span>` : ''}` : '<span class="muted">Sem referência de abastecimento</span>' }, { h: 'Viagens', n: 1, f: c => c.ref ? c.T.length : '—' }, { h: 'Km percorridos', n: 1, f: c => c.ref ? `<span class="mono">${nf(c.km)}</span>` : '—' }, { h: 'Consumo médio', f: c => c.cons.ok ? `<b class="mono">${nf(c.cons.kml, 1)} km/L</b><div class="muted" style="font-size:12px">${nf(c.cons.km)} km ÷ ${nf(c.cons.litros, 2)} L · ${fd(c.cons.de.data)} a ${fd(c.cons.ate.data)}</div>` : `<span class="muted">Dados insuficientes</span><div class="muted" style="font-size:12px">${esc(c.cons.motivo)}</div>` }, { h: 'Conflitos de km', f: c => c.ref && c.conflitos ? `<span class="pill p-warn">${c.conflitos}</span>` : c.ref ? '<span class="pill p-ok">0</span>' : '—' }], C, 'Nenhum veículo.')}
+    <p class="muted" style="font-size:12px;margin:10px 0 0">Consumo médio (tanque cheio a tanque cheio): km percorridos entre os dois últimos abastecimentos com tanque cheio ÷ litros colocados depois do primeiro até o segundo, incluindo abastecimentos parciais no meio. Abastecimentos antigos sem essa informação não entram no cálculo. O total da frota soma km e litros de todos os veículos (não é média de médias). Conflitos de km aparecem no Registro.</p></section>
   <div class="grid g-dash">
     <section class="card"><header><h2>Quilometragem por dia</h2><span class="grow"></span><span class="muted" style="font-size:12px">${fd(ini)} a ${fd(fim)}</span></header><div class="chart-box"><canvas id="c-km" aria-label="Gráfico de km por dia"></canvas></div></section>
     <section class="card"><header><h2>Gasto com combustível</h2><span class="grow"></span><span class="muted" style="font-size:12px">30 dias</span></header><div class="chart-box"><canvas id="c-fuel" aria-label="Gráfico de gasto por veículo"></canvas></div></section>
@@ -702,6 +709,7 @@ function fuelDialog(a) {
     <label class="fld">Modalidade<select id="e-mod">${Object.entries(MOD).map(([k, l]) => `<option value="${k}" ${k === a.modalidade ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     <label class="fld">Valor total (R$)<input id="e-tot" inputmode="decimal" value="${nf(a.total, 2)}"></label>
     <label class="fld">Preço por litro (R$/L)<input id="e-prec" inputmode="decimal" value="${nf(a.preco_litro, 3)}"></label>
+    <label class="fld">Completou o tanque?<select id="e-tq"><option value="" ${a.tanque_cheio == null ? 'selected' : ''}>Não informado</option><option value="1" ${a.tanque_cheio === true ? 'selected' : ''}>Sim, tanque cheio</option><option value="0" ${a.tanque_cheio === false ? 'selected' : ''}>Não, parcial</option></select></label>
     <label class="fld" style="grid-column:1/-1">Observações<input id="e-obs" value="${esc(a.obs || '')}"></label></div><div id="e-err"></div></div>
     <div class="dialog-foot"><button type="button" class="btn sec" id="c">Cancelar</button><button class="btn">Salvar alterações</button></div></form>`, d => {
     $('#c', d).onclick = closeDlg;
@@ -710,8 +718,9 @@ function fuelDialog(a) {
       let err = '';
       if (!$('#e-data', d).value || !$('#e-hora', d).value) err = 'Informe data e horário.'; else if ($('#e-data', d).value > today()) err = 'A data não pode ser futura.';
       else if (!(t > 0)) err = 'Valor total inválido.'; else if (!(pr > 0)) err = 'Preço por litro inválido.'; else if (km != null && km < 0) err = 'A quilometragem deve ser 0 ou maior.';
+      else if ($('#e-tq', d).value === '1' && km == null) err = 'Com tanque cheio, informe a km do veículo.';
       if (err) { $('#e-err').innerHTML = `<div class="msg err">${esc(err)}</div>`; return; }
-      try { await DB.editFuel(a.id, { data: $('#e-data', d).value, hora: $('#e-hora', d).value, km, posto: $('#e-posto', d).value.trim() || null, combustivel: $('#e-comb', d).value, modalidade: $('#e-mod', d).value, total: t, preco_litro: pr, litros: Math.round(t / pr * 100) / 100, obs: $('#e-obs', d).value.trim() || null }); closeDlg(); toast('Abastecimento atualizado.'); route(); } catch (x) { $('#e-err').innerHTML = `<div class="msg err">${esc(x.message)}</div>`; }
+      try { await DB.editFuel(a.id, { data: $('#e-data', d).value, hora: $('#e-hora', d).value, km, posto: $('#e-posto', d).value.trim() || null, combustivel: $('#e-comb', d).value, modalidade: $('#e-mod', d).value, tanque_cheio: $('#e-tq', d).value === '' ? null : $('#e-tq', d).value === '1', total: t, preco_litro: pr, litros: Math.round(t / pr * 100) / 100, obs: $('#e-obs', d).value.trim() || null }); closeDlg(); toast('Abastecimento atualizado.'); route(); } catch (x) { $('#e-err').innerHTML = `<div class="msg err">${esc(x.message)}</div>`; }
     };
   });
 }
@@ -772,6 +781,7 @@ function rAbastecimento() {
       <label class="fld">Valor total pago (R$)<input id="a-tot" inputmode="decimal" placeholder="300,00"></label>
       <label class="fld">Preço por litro (R$/L)<input id="a-prec" inputmode="decimal" placeholder="6,19"></label>
       <label class="fld">Litros (calculado)<input id="a-lit" readonly tabindex="-1"></label>
+      <fieldset class="fld tq"><legend>Completou o tanque? *</legend><span class="seg"><label><input type="radio" name="a-tq" value="1"> Sim, tanque cheio</label><label><input type="radio" name="a-tq" value="0"> Não, parcial</label></span><span class="hint muted">Usado no cálculo do consumo médio</span></fieldset>
       <label class="fld w">Viagem relacionada (opcional)<select id="a-trip"><option value="">Nenhuma</option>${trips.map(t => `<option value="${t.id}">${fd(t.data)} — ${esc(t.origem_destino)}</option>`).join('')}</select></label>
       <label class="fld w">Observações<input id="a-obs"></label>
       <div class="w" id="a-err"></div>
@@ -794,10 +804,12 @@ function rAbastecimento() {
       else if (!(t > 0)) err = 'Valor total inválido. Use números, por exemplo 300,00.';
       else if (!(p > 0)) err = 'Preço por litro inválido. Use números, por exemplo 6,19.';
       else if (km != null && km < 0) err = 'A quilometragem deve ser 0 ou maior.';
+      else if (!$('[name="a-tq"]:checked')) err = 'Informe se o tanque foi completado (Sim ou Não).';
+      else if ($('[name="a-tq"]:checked').value === '1' && km == null) err = 'Com tanque cheio, informe a km do veículo: ela é necessária para calcular o consumo.';
       if (err) { $('#a-err').innerHTML = `<div class="msg err">${ico('alert')}${esc(err)}</div>`; return; }
       btn.disabled = true;
       try {
-        const r = await DB.addFuel({ id: f.dataset.fid, vehicle_id: mine.vehicle_id, user_id: S.user.id, trip_id: $('#a-trip').value || null, data: $('#a-data').value, hora: $('#a-hora').value, km, posto: $('#a-posto').value.trim(), combustivel: $('#a-comb').value, litros: Math.round(t / p * 100) / 100, preco_litro: p, total: t, modalidade: $('#a-mod').value, obs: $('#a-obs').value.trim(), origem: 'app', criado_em: new Date().toISOString() });
+        const r = await DB.addFuel({ id: f.dataset.fid, vehicle_id: mine.vehicle_id, user_id: S.user.id, trip_id: $('#a-trip').value || null, data: $('#a-data').value, hora: $('#a-hora').value, km, tanque_cheio: $('[name="a-tq"]:checked').value === '1', posto: $('#a-posto').value.trim(), combustivel: $('#a-comb').value, litros: Math.round(t / p * 100) / 100, preco_litro: p, total: t, modalidade: $('#a-mod').value, obs: $('#a-obs').value.trim(), origem: 'app', criado_em: new Date().toISOString() });
         toast(r === 'repetido' ? 'Este abastecimento já estava salvo. Nada foi duplicado.' : 'Abastecimento salvo.'); route();
       } catch (x) { btn.disabled = false; $('#a-err').innerHTML = `<div class="msg err">${ico('alert')}${esc(x.message)}</div>`; }
     };
@@ -808,7 +820,7 @@ function rAbastecimento() {
   ${table([
     { h: 'Data', f: a => fd(a.data) }, { h: 'Hora', f: a => esc(a.hora) }, { h: 'Veículo', f: a => vehLabel(DB.veh(a.vehicle_id)) }, { h: 'KM', n: 1, f: a => a.km != null ? `<span class="mono">${nf(a.km)}</span>` : '—' },
     { h: 'Posto', f: a => esc(a.posto) }, { h: 'Combustível', f: a => esc(a.combustivel) }, { h: 'Modalidade', f: a => esc(MOD[a.modalidade] || '') },
-    { h: 'Litros', n: 1, f: a => nf(a.litros, 2) }, { h: 'R$/L', n: 1, f: a => nf(a.preco_litro, 3) }, { h: 'Total', n: 1, f: a => brl(a.total) }, { h: 'Registrado por', f: a => esc(DB.user(a.user_id)?.nome || 'Importação') }
+    { h: 'Litros', n: 1, f: a => nf(a.litros, 2) }, { h: 'Tanque', f: a => a.tanque_cheio === true ? '<span class="pill p-ok">Cheio</span>' : a.tanque_cheio === false ? '<span class="pill p-mute">Parcial</span>' : '<span class="muted">Não informado</span>' }, { h: 'R$/L', n: 1, f: a => nf(a.preco_litro, 3) }, { h: 'Total', n: 1, f: a => brl(a.total) }, { h: 'Registrado por', f: a => esc(DB.user(a.user_id)?.nome || 'Importação') }
   ], A.slice(0, 40).map(a => ({ ...a, __sel: 'f:' + a.id })))}
   <p class="muted" style="font-size:12px;margin:10px 0 0">Proteção contra duplicidade: cada formulário tem um identificador único (clique repetido, recarga ou reenvio não criam um segundo registro) e o sistema recusa abastecimento do mesmo veículo com mesma data, horário e valor.</p></section>`;
 }

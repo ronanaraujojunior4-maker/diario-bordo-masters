@@ -21,7 +21,7 @@ Sistema novo e independente. Não usa o código, o Firebase nem a publicação d
 | `assets/` | Logotipo original da Masters e ícones |
 | `cloud.js`, `config.js` | Conexão com o Supabase (somente chave pública) |
 | `manifest.webmanifest`, `sw.js` | Instalação na tela inicial; o service worker nunca guarda dados do banco |
-| `supabase/migrations/` | 001 esquema/RLS/auditoria/última km; 002 permissões de gatilhos; 003 primeiro acesso; 004 importação só pelo administrador; 005 recuperação de acesso; 006 edição e exclusão lógica; 008 exclusão sem justificativa; 007 perfil híbrido, último abastecimento por veículo e códigos de recuperação |
+| `supabase/migrations/` | 001 esquema/RLS/auditoria/última km; 002 permissões de gatilhos; 003 primeiro acesso; 004 importação só pelo administrador; 005 recuperação de acesso; 006 edição e exclusão lógica; 008 exclusão sem justificativa; 009 tanque cheio; 007 perfil híbrido, último abastecimento por veículo e códigos de recuperação |
 | `supabase/manual/005b_ronan_admin.sql` | Trecho rodado manualmente no SQL Editor (vários administradores; RONAN administrador) |
 | `supabase/functions/usuarios` | Criação de usuários e redefinição de senha (chave secreta só no servidor) |
 | `supabase/teste_regras.sql` | Teste das regras (executado em Postgres local: todas passaram) |
@@ -33,7 +33,7 @@ Bibliotecas por CDN: Chart.js 4.4.1, SheetJS 0.18.5, JSZip 3.10.1 e supabase-js 
 - Perfis: MASTERS é administrador exclusivamente administrativo (nunca assume, reserva ou é responsável por veículo; garantido no banco). RONAN é administrador e também operacional (`profiles.opera_veiculos = true`): assume e libera o veículo sob sua responsabilidade e registra, edita e exclui as próprias viagens e abastecimentos. A regra fica em `pode_operar()` (RLS, `assumir_veiculo` e gatilho de responsável); o campo é por usuário, em Usuários → "Também opera veículos". O banco impede remover o último administrador ativo.
 - Visão geral:
   - Indicadores por ciclo de abastecimento: o ciclo de cada veículo vai do seu último abastecimento válido até agora (nunca usa a data de outro veículo). Viagens e km do ciclo sem repetição, por veículo (quadro "Ciclo atual por veículo") e consolidados (somas). Sem abastecimento: "Sem referência de abastecimento".
-  - Consumo médio = km ÷ litros consumidos. O abastecimento não registra "tanque cheio", então litros abastecidos não equivalem aos consumidos: o sistema mostra "Dados insuficientes" em vez de estimar.
+  - Consumo médio (tanque cheio a tanque cheio): o abastecimento tem a pergunta obrigatória "Completou o tanque?" (Sim/Não; coluna fuelings.tanque_cheio, migration 009). Consumo = km entre os dois últimos tanques cheios ÷ litros colocados depois do primeiro até o segundo (parciais no meio entram). Tanque cheio exige km. Registros antigos ficam "Não informado" e não entram. Total da frota = soma de km ÷ soma de litros.
   - "Frota em operação": em uso, disponíveis e reservados (reserva ainda não existe no sistema: 0), só veículos ativos e não excluídos.
   - "Resumo da Operação" do mês (veículos em uso agora, abastecimentos, km sem repetição e veículo mais utilizado).
 - Recuperação de senha por código (sem e-mail, SMTP ou serviço externo):
@@ -61,6 +61,5 @@ Bibliotecas por CDN: Chart.js 4.4.1, SheetJS 0.18.5, JSZip 3.10.1 e supabase-js 
 ## Pendências
 
 1. Importação histórica real: aguardando os arquivos originais (todas as partes por veículo e/ou CSV exportado do sistema anterior). Só é gravada após conferência da prévia.
-2. Consumo médio real: exige registrar se o abastecimento completou o tanque (campo novo, a decidir).
 3. Reserva de veículos: não existe; o indicador mostra 0.
 4. Homologação; a troca do sistema antigo só com aprovação.
