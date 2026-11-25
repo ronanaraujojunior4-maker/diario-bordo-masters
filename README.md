@@ -63,3 +63,5 @@ Bibliotecas por CDN: Chart.js 4.4.1, SheetJS 0.18.5, JSZip 3.10.1 e supabase-js 
 1. Importação histórica real: aguardando os arquivos originais (todas as partes por veículo e/ou CSV exportado do sistema anterior). Só é gravada após conferência da prévia.
 3. Reserva de veículos: não existe; o indicador mostra 0.
 4. Homologação; a troca do sistema antigo só com aprovação.
+
+Publicação: GitHub Pages, main / root.
